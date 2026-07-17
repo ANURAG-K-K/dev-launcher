@@ -1,1 +1,118 @@
 @import "tailwindcss";
+
+/* Design tokens lifted from UI-Design/dev-Launcher(standalone).html */
+@theme {
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-text: #201e1d;
+  --color-divider: color-mix(in srgb, #201e1d 40%, transparent);
+
+  --color-neutral-100: #f8f4f4;
+  --color-neutral-200: #eae7e7;
+  --color-neutral-300: #d7d3d3;
+  --color-neutral-400: #bab6b6;
+  --color-neutral-500: #9b9797;
+  --color-neutral-600: #7d7979;
+  --color-neutral-700: #605d5d;
+  --color-neutral-800: #444141;
+  --color-neutral-900: #2d2b2b;
+
+  --color-accent-100: oklch(97% 0.015 255);
+  --color-accent-200: oklch(93% 0.03 255);
+  --color-accent-300: oklch(87% 0.06 255);
+  --color-accent-400: oklch(78% 0.1 255);
+  --color-accent-500: oklch(67% 0.15 255);
+  --color-accent-600: oklch(56% 0.17 255);
+  --color-accent-700: oklch(45% 0.15 255);
+  --color-accent-800: oklch(35% 0.12 255);
+  --color-accent-900: oklch(25% 0.08 255);
+  --color-accent: var(--color-accent-600);
+
+  --color-status-good-bg: oklch(94% 0.055 148);
+  --color-status-good-fg: oklch(34% 0.11 148);
+  --color-status-bad-bg: oklch(94% 0.045 25);
+  --color-status-bad-fg: oklch(38% 0.15 25);
+
+  --font-heading: "Archivo", system-ui, sans-serif;
+  --font-body: "Archivo", system-ui, sans-serif;
+
+  --radius-md: 0px;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2d2b2b 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+}
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--color-neutral-300); }
+
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.text-muted { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* — buttons — */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; font-family: var(--font-heading); font-weight: 800; font-size: 14px;
+  line-height: 1.2; color: var(--color-text); background: transparent; border: 1px solid transparent;
+  padding: 8px 14px; border-radius: var(--radius-md);
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--color-accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--color-accent-700); }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.btn-ghost { color: var(--color-accent); padding-inline: 4px; }
+.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+
+/* — cards — */
+.card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-radius: var(--radius-md); background: var(--color-surface);
+}
+.card-kicker { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent); }
+.card-title { font-family: var(--font-heading); font-weight: 800; font-size: 17px; line-height: 1.2; }
+.elev-sm { box-shadow: var(--shadow-sm); }
+
+/* — tables — */
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th {
+  text-align: left; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  padding: 8px; border-bottom: 2px solid var(--color-divider);
+}
+.table td { padding: 8px; border-bottom: 1px solid var(--color-divider); }
+.table tbody tr:hover { background: color-mix(in srgb, var(--color-text) 4%, transparent); }
+
+/* — tags — */
+.tag { display: inline-flex; align-items: center; font-size: 11px; letter-spacing: 0.02em; padding: 3px 10px; }
+.tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
+.tag-good { background: var(--color-status-good-bg); color: var(--color-status-good-fg); }
+.tag-bad { background: var(--color-status-bad-bg); color: var(--color-status-bad-fg); }
+
+/* — sidebar navigation — */
+.navitem {
+  display: flex; width: 100%; align-items: center; gap: 10px; padding: 11px 16px;
+  font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--color-text);
+  cursor: pointer; text-align: left; background: none; border: none; border-left: 3px solid transparent;
+}
+.navitem svg { flex: none; }
+.navitem:hover:not(:disabled) { background: var(--color-neutral-200); }
+.navitem:disabled { opacity: 0.4; cursor: not-allowed; }
+.navitem-active { border-left-color: var(--color-accent); background: var(--color-neutral-200); color: var(--color-accent-700); }
+
+.sectiontitle { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.5; padding: 20px 16px 8px; }
+
+.hr { height: 2px; border: 0; margin: 24px 0; background: var(--color-divider); }
