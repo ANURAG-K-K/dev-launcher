@@ -458,6 +458,88 @@ pub async fn open_repo_terminal(
     }
 }
 
+// ── Git integration (R5) ────────────────────────────────────────────────────
+
+/// Per-repository git status (R5). Only returned for repos that are git working trees.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoGitStatus {
+    pub repository_id: i64,
+    pub branch: String,
+    pub dirty: bool,
+    pub ahead: i64,
+    pub behind: i64,
+}
+
+/// Git status for every git-tracked repository in a project (R5). Non-git repos are omitted.
+#[tauri::command]
+pub async fn git_status_project(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<RepoGitStatus>, AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let mut out = Vec::new();
+    for repo in repos {
+        if let Some(status) = git_status_for(&repo.path, repo.id) {
+            out.push(status);
+        }
+    }
+    Ok(out)
+}
+
+/// Run `git` in `path` and return its status, or None if it isn't a git working tree.
+fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
+    let branch_out = std::process::Command::new("git")
+        .args(["-C", path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !branch_out.status.success() {
+        return None; // not a git repository
+    }
+    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    if branch.is_empty() {
+        return None;
+    }
+
+    let dirty = std::process::Command::new("git")
+        .args(["-C", path, "status", "--porcelain"])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    // `--left-right --count @{upstream}...HEAD` prints "<behind>\t<ahead>"; missing upstream -> 0/0.
+    let (ahead, behind) = std::process::Command::new("git")
+        .args([
+            "-C",
+            path,
+            "rev-list",
+            "--left-right",
+            "--count",
+            "@{upstream}...HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let mut parts = s.split_whitespace();
+            let behind = parts.next()?.parse::<i64>().ok()?;
+            let ahead = parts.next()?.parse::<i64>().ok()?;
+            Some((ahead, behind))
+        })
+        .unwrap_or((0, 0));
+
+    Some(RepoGitStatus {
+        repository_id,
+        branch,
+        dirty,
+        ahead,
+        behind,
+    })
+}
+
 // ── Settings (F14) ──────────────────────────────────────────────────────────
 
 /// Application settings (F14). Stored as a single JSON blob under the `app_settings` key.

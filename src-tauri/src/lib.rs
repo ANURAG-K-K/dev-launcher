@@ -74,6 +74,7 @@ pub fn run() {
             commands::remove_repository,
             commands::open_repo_folder,
             commands::open_repo_terminal,
+            commands::git_status_project,
             commands::list_dependencies,
             commands::set_repository_dependencies,
             commands::execute_project,
