@@ -34,6 +34,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Resolve the SQLite file under the OS app-data dir (data-model §1) and
             // initialize the pool + run migrations before any command is reachable.

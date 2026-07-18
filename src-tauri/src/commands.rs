@@ -299,6 +299,7 @@ pub struct Settings {
     pub auto_restart: bool,
     pub terminal_behavior: String,
     pub log_retention: i64,
+    pub notifications_enabled: bool,
 }
 
 impl Default for Settings {
@@ -312,6 +313,7 @@ impl Default for Settings {
             auto_restart: false,
             terminal_behavior: "external".into(),
             log_retention: 1000,
+            notifications_enabled: false,
         }
     }
 }
