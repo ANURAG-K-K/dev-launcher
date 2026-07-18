@@ -6,6 +6,7 @@
 use tauri::State;
 
 use crate::error::AppError;
+use crate::process_manager::{LaunchSpec, StatusUpdate};
 use crate::{persistence, scanner, AppState};
 
 /// Response for `open_project` / `scan_repositories`: the project plus its active repositories.
@@ -103,4 +104,105 @@ async fn discover_and_persist(
     persistence::list_repositories(pool, project_id)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// Enable/disable a repository (F4), returning the updated row.
+#[tauri::command]
+pub async fn set_repository_enabled(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    enabled: bool,
+) -> Result<persistence::Repository, AppError> {
+    persistence::set_repository_enabled(&state.pool, repository_id, enabled)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+// ── Process control (F9) ───────────────────────────────────────────────────
+
+/// Start a repository's dev process (F9).
+#[tauri::command]
+pub async fn start_repo(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<StatusUpdate, AppError> {
+    let spec = launch_spec_for(&state, repository_id).await?;
+    state
+        .process_manager
+        .start(repository_id, spec)
+        .await
+        .map_err(AppError::Launch)
+}
+
+/// Stop a repository's process tree (F9, forced Job Object kill).
+#[tauri::command]
+pub async fn stop_repo(state: State<'_, AppState>, repository_id: i64) -> Result<(), AppError> {
+    state
+        .process_manager
+        .stop(repository_id)
+        .map_err(AppError::Launch)
+}
+
+/// Restart a repository (Stop then Start, incrementing restart count) (F9).
+#[tauri::command]
+pub async fn restart_repo(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<StatusUpdate, AppError> {
+    state
+        .process_manager
+        .restart(repository_id)
+        .await
+        .map_err(AppError::Launch)
+}
+
+/// Resolve a repository's launch command. On Windows dev-server launchers (`npm`/`pnpm`/`yarn`/
+/// `bun`) are `.cmd` shims, so we run through `cmd /C <…>` — this is exactly why the Job Object
+/// tree-kill (ADR-0003) is required.
+async fn launch_spec_for(
+    state: &AppState,
+    repository_id: i64,
+) -> Result<LaunchSpec, AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
+
+    // Build the command tokens: a user override runs verbatim; otherwise derive from the
+    // package manager + detected script (design.md §1.4).
+    let mut tokens: Vec<String> = Vec::new();
+    if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
+        tokens.push(command.to_string());
+    } else if let Some(script) = repo.detected_script.as_deref() {
+        match repo.package_manager.as_str() {
+            "yarn" => tokens.push(format!("yarn {script}")),
+            pm => tokens.push(format!("{pm} run {script}")),
+        }
+    } else {
+        return Err(AppError::Launch(format!(
+            "repository '{}' has no launch command (set one or add a start script)",
+            repo.name
+        )));
+    }
+    if let Some(args) = repo.args.as_deref().filter(|a| !a.is_empty()) {
+        tokens.push(args.to_string());
+    }
+    let command_line = tokens.join(" ");
+
+    #[cfg(windows)]
+    {
+        Ok(LaunchSpec {
+            program: "cmd".to_string(),
+            args: vec!["/C".to_string(), command_line],
+            cwd: repo.path,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(LaunchSpec {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), command_line],
+            cwd: repo.path,
+        })
+    }
 }

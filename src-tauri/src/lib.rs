@@ -19,16 +19,19 @@ mod process_manager;
 mod scanner;
 
 use sqlx::SqlitePool;
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
+
+use process_manager::ProcessManager;
 
 /// Backend state shared across commands (Tauri managed state).
 pub struct AppState {
     pub pool: SqlitePool,
+    pub process_manager: ProcessManager,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -50,14 +53,32 @@ pub fn run() {
                 pool
             });
 
-            app.manage(AppState { pool });
+            let process_manager = ProcessManager::new(app.handle().clone());
+            app.manage(AppState {
+                pool,
+                process_manager,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_project,
             commands::scan_repositories,
             commands::list_recent_projects,
+            commands::set_repository_enabled,
+            commands::start_repo,
+            commands::stop_repo,
+            commands::restart_repo,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        // App-quit cleanup: kill every tracked process tree so no dev-server child is
+        // orphaned when the launcher exits (F9 / ADR-0003).
+        if let RunEvent::ExitRequested { .. } = event {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                state.process_manager.kill_all();
+            }
+        }
+    });
 }

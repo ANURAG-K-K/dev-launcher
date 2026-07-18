@@ -187,6 +187,33 @@ pub async fn get_project(pool: &SqlitePool, id: i64) -> Result<Option<Project>, 
         .await
 }
 
+/// Fetch a single repository by id, if it exists.
+pub async fn get_repository(pool: &SqlitePool, id: i64) -> Result<Option<Repository>, sqlx::Error> {
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Toggle a repository's `enabled` flag (F4), returning the updated row.
+pub async fn set_repository_enabled(
+    pool: &SqlitePool,
+    id: i64,
+    enabled: bool,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE repositories SET enabled = ?, updated_at = ? WHERE id = ?")
+        .bind(if enabled { 1 } else { 0 })
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -33,5 +33,11 @@ chrono = { version = "0.4", features = ["serde"] }
 # Ergonomic error enums mapped to a serializable AppError at the IPC boundary.
 thiserror = "2"
 
-# NOTE (implementation TODO): the Windows Job Object process-tree kill (ADR-0003) will add the
-# `windows` crate with Win32 Job Object features here when the process manager is implemented.
+# Windows Job Object process-tree kill (ADR-0003 / D2).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
