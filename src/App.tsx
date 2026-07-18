@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
@@ -54,6 +55,7 @@ function App() {
   const [dependencies, setDependencies] = useState<DependencyEdge[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
+  const [recentProjects, setRecentProjects] = useState<ProjectT[]>([]);
 
   // Live mirror of repositories for use inside the []-deps event listener (avoids a stale closure).
   const reposRef = useRef<Repository[]>([]);
@@ -115,6 +117,23 @@ function App() {
     setRepositories(result.repositories);
     setView("project");
     refreshDependencies(result.project.id);
+    refreshRecent();
+  }
+
+  async function refreshRecent() {
+    try {
+      setRecentProjects(await listRecentProjects());
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function openRecent(rootPath: string) {
+    try {
+      applyResult(await openProject(rootPath));
+    } catch {
+      /* folder gone / unreadable — ignore */
+    }
   }
 
   function openLogs(repositoryId: number) {
@@ -160,7 +179,34 @@ function App() {
       }
     }
     restore();
+    refreshRecent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep the window at the design's 3:2 aspect ratio on resize (min size set in tauri.conf.json).
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    const RATIO = 1200 / 800;
+    let adjusting = false;
+    let unlisten: (() => void) | undefined;
+    appWindow
+      .onResized(async ({ payload }) => {
+        if (adjusting) return;
+        const { width, height } = payload;
+        const targetHeight = Math.round(width / RATIO);
+        if (Math.abs(targetHeight - height) > 2) {
+          adjusting = true;
+          try {
+            await appWindow.setSize(new PhysicalSize(width, targetHeight));
+          } finally {
+            adjusting = false;
+          }
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
   }, []);
 
   return (
@@ -189,7 +235,7 @@ function App() {
           </div>
         </div>
 
-        <nav style={{ flex: 1, overflow: "auto", paddingBottom: 16 }}>
+        <nav style={{ paddingBottom: 8 }}>
           {NAV.map((n) => {
             const disabled = n.id === "project" && !project;
             return (
@@ -207,6 +253,25 @@ function App() {
             );
           })}
         </nav>
+
+        <div style={{ flex: 1, overflow: "auto", borderTop: "2px solid var(--color-divider)", paddingBottom: 8 }}>
+          <div className="sectiontitle" style={{ padding: "12px 16px 6px" }}>Recent</div>
+          {recentProjects.length === 0 ? (
+            <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No recent projects</div>
+          ) : (
+            recentProjects.map((p) => (
+              <button
+                key={p.id}
+                className={cn("navitem", project?.id === p.id && "navitem-active")}
+                title={p.rootPath}
+                onClick={() => openRecent(p.rootPath)}
+                style={{ display: "block", width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {p.name}
+              </button>
+            ))
+          )}
+        </div>
 
         <div style={{ borderTop: "2px solid var(--color-divider)", padding: "14px 16px", fontSize: 11, opacity: 0.5 }}>
           v0.1.0 · Tauri
