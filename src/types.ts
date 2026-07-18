@@ -72,6 +72,8 @@ export interface LaunchItemRecord {
   repositoryName: string;
   status: string;
   pid: number | null;
+  exitCode: number | null;
+  stoppedAt: string | null;
 }
 
 /** A recorded "Execute All" run. */

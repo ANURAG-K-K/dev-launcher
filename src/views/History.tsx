@@ -62,9 +62,20 @@ export function History({ project }: { project: Project | null }) {
               {r.items.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {r.items.map((item, i) => (
-                    <span key={i} className="tag tag-neutral">
+                    <span
+                      key={i}
+                      className={cn(
+                        "tag",
+                        item.status === "running"
+                          ? "tag-good"
+                          : item.status === "crashed"
+                            ? "tag-bad"
+                            : "tag-neutral",
+                      )}
+                    >
                       {item.repositoryName}
                       {item.pid != null && <span className="mono text-muted"> · pid {item.pid}</span>}
+                      {item.exitCode != null && <span className="mono text-muted"> · exit {item.exitCode}</span>}
                     </span>
                   ))}
                 </div>
