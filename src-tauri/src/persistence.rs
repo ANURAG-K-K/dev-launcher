@@ -222,16 +222,16 @@ pub async fn insert_launch_history(
     Ok(res.last_insert_rowid())
 }
 
-/// Record a repository within a launch run.
+/// Record a repository within a launch run; returns the new item id.
 pub async fn insert_launch_history_item(
     pool: &SqlitePool,
     launch_history_id: i64,
     repository_id: i64,
     pid: Option<i64>,
     status: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<i64, sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
+    let res = sqlx::query(
         "INSERT INTO launch_history_items (launch_history_id, repository_id, pid, status, started_at)
          VALUES (?, ?, ?, ?, ?)",
     )
@@ -242,6 +242,58 @@ pub async fn insert_launch_history_item(
     .bind(&now)
     .execute(pool)
     .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Mark a launch item as running with its PID (F13).
+pub async fn update_launch_history_item_running(
+    pool: &SqlitePool,
+    item_id: i64,
+    pid: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE launch_history_items SET status = 'running', pid = ?, started_at = ? WHERE id = ?")
+        .bind(pid)
+        .bind(&now)
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Mirror a process's terminal exit into its launch item (F13).
+pub async fn update_launch_history_item_exit(
+    pool: &SqlitePool,
+    item_id: i64,
+    status: &str,
+    exit_code: Option<i64>,
+    stopped_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE launch_history_items SET status = ?, exit_code = ?, stopped_at = ? WHERE id = ?")
+        .bind(status)
+        .bind(exit_code)
+        .bind(stopped_at)
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Sweep launches left `running` by a previous session (the app died, so those OS processes are
+/// gone): mark their items crashed and the runs failed (F13, startup reconciliation).
+pub async fn reconcile_stale_launches(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE launch_history_items SET status = 'crashed', stopped_at = ?
+         WHERE status IN ('running', 'pending', 'restarting') AND stopped_at IS NULL",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    sqlx::query("UPDATE launch_history SET status = 'failed', finished_at = ? WHERE status = 'running'")
+        .bind(&now)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

@@ -66,6 +66,8 @@ struct Tracked {
     /// Set true on a user-initiated stop so the exit watcher records Stopped rather than Crashed.
     stopping: Arc<AtomicBool>,
     spec: LaunchSpec,
+    /// The launch_history_items row to mirror this process's exit into (F13), if part of a run.
+    history_item_id: Option<i64>,
     /// Windows Job Object handle as an isize (0 = none). isize is Send, unlike a raw HANDLE.
     #[cfg(windows)]
     job: isize,
@@ -74,21 +76,29 @@ struct Tracked {
 #[derive(Clone)]
 pub struct ProcessManager {
     app: AppHandle,
+    pool: sqlx::SqlitePool,
     procs: Arc<Mutex<HashMap<i64, Tracked>>>,
     generation: Arc<AtomicU64>,
 }
 
 impl ProcessManager {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, pool: sqlx::SqlitePool) -> Self {
         Self {
             app,
+            pool,
             procs: Arc::new(Mutex::new(HashMap::new())),
             generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Start a repository's process. Errors if it is already running/starting.
-    pub async fn start(&self, repo_id: i64, spec: LaunchSpec) -> Result<StatusUpdate, String> {
+    /// `history_item_id` (when part of an Execute All run) receives the terminal exit mirror (F13).
+    pub async fn start(
+        &self,
+        repo_id: i64,
+        spec: LaunchSpec,
+        history_item_id: Option<i64>,
+    ) -> Result<StatusUpdate, String> {
         let restart_count = {
             let map = self.procs.lock().unwrap();
             if let Some(t) = map.get(&repo_id) {
@@ -100,7 +110,7 @@ impl ProcessManager {
                 0
             }
         };
-        self.spawn(repo_id, spec, restart_count)
+        self.spawn(repo_id, spec, restart_count, history_item_id)
     }
 
     /// Stop a repository's process tree (forced). The exit watcher emits the terminal status.
@@ -140,7 +150,7 @@ impl ProcessManager {
             let map = self.procs.lock().unwrap();
             map.get(&repo_id).map(|t| t.restart_count).unwrap_or(0)
         } + 1;
-        self.spawn(repo_id, spec, restart_count)
+        self.spawn(repo_id, spec, restart_count, None)
     }
 
     /// Kill every tracked process tree (app-quit cleanup — no orphans).
@@ -160,6 +170,7 @@ impl ProcessManager {
         repo_id: i64,
         spec: LaunchSpec,
         restart_count: u32,
+        history_item_id: Option<i64>,
     ) -> Result<StatusUpdate, String> {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let stopping = Arc::new(AtomicBool::new(false));
@@ -202,6 +213,7 @@ impl ProcessManager {
                     generation,
                     stopping: stopping.clone(),
                     spec,
+                    history_item_id,
                     #[cfg(windows)]
                     job,
                 },
@@ -221,6 +233,7 @@ impl ProcessManager {
         // (unless a newer generation has already replaced this entry).
         let procs = self.procs.clone();
         let app = self.app.clone();
+        let pool = self.pool.clone();
         tokio::spawn(async move {
             let exit = child.wait().await;
             let code = exit.ok().and_then(|s| s.code());
@@ -255,6 +268,19 @@ impl ProcessManager {
             }
             if let Some(u) = final_update {
                 let _ = app.emit("repo_status_changed", &u);
+                // Mirror the terminal state into launch history (F13), if part of a run.
+                if let Some(item_id) = history_item_id {
+                    let status = if was_stopping { "stopped" } else { "crashed" };
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = crate::persistence::update_launch_history_item_exit(
+                        &pool,
+                        item_id,
+                        status,
+                        code.map(|c| c as i64),
+                        &now,
+                    )
+                    .await;
+                }
             }
         });
 

@@ -249,16 +249,31 @@ pub async fn execute_project(
     let mut started = Vec::new();
     for (i, id) in order.iter().enumerate() {
         let spec = launch_spec_for(&state, *id).await?;
-        if let Ok(update) = state.process_manager.start(*id, spec).await {
-            started.push(*id);
-            let _ = persistence::insert_launch_history_item(
-                &state.pool,
-                history_id,
-                *id,
-                update.pid.map(|p| p as i64),
-                "running",
-            )
-            .await;
+        // Create the history item first so the process manager can mirror this repo's exit into it.
+        let item_id = persistence::insert_launch_history_item(&state.pool, history_id, *id, None, "pending")
+            .await
+            .ok();
+        match state.process_manager.start(*id, spec, item_id).await {
+            Ok(update) => {
+                started.push(*id);
+                if let Some(iid) = item_id {
+                    let _ = persistence::update_launch_history_item_running(
+                        &state.pool,
+                        iid,
+                        update.pid.map(|p| p as i64),
+                    )
+                    .await;
+                }
+            }
+            Err(_) => {
+                if let Some(iid) = item_id {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = persistence::update_launch_history_item_exit(
+                        &state.pool, iid, "crashed", None, &now,
+                    )
+                    .await;
+                }
+            }
         }
         if i + 1 < order.len() {
             tokio::time::sleep(std::time::Duration::from_millis(launch_delay_ms)).await;
@@ -296,6 +311,8 @@ pub struct LaunchItemRecord {
     pub repository_name: String,
     pub status: String,
     pub pid: Option<i64>,
+    pub exit_code: Option<i64>,
+    pub stopped_at: Option<String>,
 }
 
 /// A launch run with its repositories resolved to names (F13).
@@ -342,6 +359,8 @@ pub async fn list_launch_history(
                 repository_name,
                 status: it.status,
                 pid: it.pid,
+                exit_code: it.exit_code,
+                stopped_at: it.stopped_at,
             });
         }
         out.push(LaunchRecord {
@@ -706,7 +725,7 @@ pub async fn start_repo(
     let spec = launch_spec_for(&state, repository_id).await?;
     state
         .process_manager
-        .start(repository_id, spec)
+        .start(repository_id, spec, None)
         .await
         .map_err(AppError::Launch)
 }

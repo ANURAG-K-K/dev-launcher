@@ -51,10 +51,12 @@ pub fn run() {
                 persistence::run_migrations(&pool)
                     .await
                     .expect("failed to run migrations");
+                // Reconcile launches left "running" by a previous session (F13).
+                let _ = persistence::reconcile_stale_launches(&pool).await;
                 pool
             });
 
-            let process_manager = ProcessManager::new(app.handle().clone());
+            let process_manager = ProcessManager::new(app.handle().clone(), pool.clone());
             app.manage(AppState {
                 pool,
                 process_manager,
