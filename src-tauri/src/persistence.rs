@@ -179,6 +179,48 @@ pub async fn list_repositories(
     .await
 }
 
+/// All dependency edges within a project, as `(repository_id, depends_on_repository_id)` (F8).
+pub async fn list_dependencies(
+    pool: &SqlitePool,
+    project_id: i64,
+) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+    sqlx::query_as::<_, (i64, i64)>(
+        "SELECT rd.repository_id, rd.depends_on_repository_id
+         FROM repository_dependencies rd
+         JOIN repositories r ON r.id = rd.repository_id
+         WHERE r.project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Replace a repository's `depends-on` edges with `depends_on` (F8). Self-edges and duplicates are
+/// ignored by the `CHECK`/`UNIQUE` constraints via `INSERT OR IGNORE`. Cycle-checking is the
+/// caller's responsibility (done before this write).
+pub async fn set_repository_dependencies(
+    pool: &SqlitePool,
+    repository_id: i64,
+    depends_on: &[i64],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM repository_dependencies WHERE repository_id = ?")
+        .bind(repository_id)
+        .execute(&mut *tx)
+        .await?;
+    for dep in depends_on {
+        sqlx::query(
+            "INSERT OR IGNORE INTO repository_dependencies (repository_id, depends_on_repository_id)
+             VALUES (?, ?)",
+        )
+        .bind(repository_id)
+        .bind(dep)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
 /// Fetch a single project by id, if it exists.
 pub async fn get_project(pool: &SqlitePool, id: i64) -> Result<Option<Project>, sqlx::Error> {
     sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")

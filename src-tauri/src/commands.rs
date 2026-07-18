@@ -7,7 +7,7 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::process_manager::{LaunchSpec, StatusUpdate};
-use crate::{persistence, scanner, AppState};
+use crate::{launcher, persistence, scanner, AppState};
 
 /// Response for `open_project` / `scan_repositories`: the project plus its active repositories.
 #[derive(Debug, serde::Serialize)]
@@ -104,6 +104,184 @@ async fn discover_and_persist(
     persistence::list_repositories(pool, project_id)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+// ── Dependencies & sequential launch (F7/F8) ───────────────────────────────
+
+/// A dependency edge: `repository_id` depends on `depends_on_repository_id`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyEdge {
+    pub repository_id: i64,
+    pub depends_on_repository_id: i64,
+}
+
+/// Outcome of an "Execute All" run.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteResult {
+    pub started: Vec<i64>,
+    pub skipped: Vec<i64>,
+}
+
+/// All dependency edges within a project (F8).
+#[tauri::command]
+pub async fn list_dependencies(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<DependencyEdge>, AppError> {
+    let edges = persistence::list_dependencies(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    Ok(edges
+        .into_iter()
+        .map(|(repository_id, depends_on_repository_id)| DependencyEdge {
+            repository_id,
+            depends_on_repository_id,
+        })
+        .collect())
+}
+
+/// Replace a repository's `depends-on` set, rejecting changes that introduce a cycle (F8/FR-18).
+#[tauri::command]
+pub async fn set_repository_dependencies(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    depends_on: Vec<i64>,
+) -> Result<(), AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("repository {repository_id} not found")))?;
+
+    let repos = persistence::list_repositories(&state.pool, repo.project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let nodes: Vec<i64> = repos.iter().map(|r| r.id).collect();
+
+    // Build the would-be edge set (existing edges minus this repo's, plus the proposed ones).
+    let mut edges: Vec<(i64, i64)> = persistence::list_dependencies(&state.pool, repo.project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .into_iter()
+        .filter(|(r, _)| *r != repository_id)
+        .collect();
+    for dep in &depends_on {
+        if *dep != repository_id {
+            edges.push((repository_id, *dep));
+        }
+    }
+
+    if let Err(cyclic) = launcher::topological_order(&nodes, &edges) {
+        return Err(AppError::Cycle(cycle_names(&repos, &cyclic)));
+    }
+
+    persistence::set_repository_dependencies(&state.pool, repository_id, &depends_on)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// Execute all enabled repositories in a project sequentially (F7), honoring dependency order
+/// (F8). A repo whose dependency is disabled/unlaunchable is skipped (policy A4: block + report);
+/// a dependency cycle aborts the whole launch before anything starts.
+#[tauri::command]
+pub async fn execute_project(
+    state: State<'_, AppState>,
+    project_id: i64,
+    launch_delay_ms: u64,
+) -> Result<ExecuteResult, AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let edges = persistence::list_dependencies(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+
+    let enabled_ids: Vec<i64> = repos.iter().filter(|r| r.enabled == 1).map(|r| r.id).collect();
+
+    // Start from enabled repos that actually have a launch command.
+    let mut runnable: std::collections::HashSet<i64> = repos
+        .iter()
+        .filter(|r| r.enabled == 1 && (r.command.is_some() || r.detected_script.is_some()))
+        .map(|r| r.id)
+        .collect();
+
+    // Block-on-unmet-dependency (A4): drop any repo that depends on something outside the runnable
+    // set, repeating until stable (so transitive blockers propagate).
+    loop {
+        let to_remove: Vec<i64> = runnable
+            .iter()
+            .copied()
+            .filter(|&r| edges.iter().any(|&(dep, on)| dep == r && !runnable.contains(&on)))
+            .collect();
+        if to_remove.is_empty() {
+            break;
+        }
+        for r in to_remove {
+            runnable.remove(&r);
+        }
+    }
+
+    // Stable order (project repo order) restricted to the runnable set.
+    let runnable_nodes: Vec<i64> = repos
+        .iter()
+        .map(|r| r.id)
+        .filter(|id| runnable.contains(id))
+        .collect();
+    let runnable_edges: Vec<(i64, i64)> = edges
+        .iter()
+        .copied()
+        .filter(|&(a, b)| runnable.contains(&a) && runnable.contains(&b))
+        .collect();
+
+    let order = launcher::topological_order(&runnable_nodes, &runnable_edges)
+        .map_err(|cyclic| AppError::Cycle(cycle_names(&repos, &cyclic)))?;
+
+    let mut started = Vec::new();
+    for (i, id) in order.iter().enumerate() {
+        let spec = launch_spec_for(&state, *id).await?;
+        if state.process_manager.start(*id, spec).await.is_ok() {
+            started.push(*id);
+        }
+        if i + 1 < order.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(launch_delay_ms)).await;
+        }
+    }
+
+    let skipped: Vec<i64> = enabled_ids
+        .into_iter()
+        .filter(|id| !started.contains(id))
+        .collect();
+    Ok(ExecuteResult { started, skipped })
+}
+
+/// Stop every running repository in a project (F9 — Stop All). Repos that aren't running are
+/// ignored.
+#[tauri::command]
+pub async fn stop_all(state: State<'_, AppState>, project_id: i64) -> Result<(), AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    for repo in repos {
+        // Ignore "not running" errors — we only care that nothing is left running.
+        let _ = state.process_manager.stop(repo.id);
+    }
+    Ok(())
+}
+
+/// Format a cycle's repo ids as a human-readable "name, name" list for an error message.
+fn cycle_names(repos: &[persistence::Repository], cyclic: &[i64]) -> String {
+    let names: Vec<String> = cyclic
+        .iter()
+        .map(|id| {
+            repos
+                .iter()
+                .find(|r| r.id == *id)
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| format!("#{id}"))
+        })
+        .collect();
+    format!("dependency cycle involving: {}", names.join(", "))
 }
 
 /// Update a repository's command configuration (F5), returning the updated row.
