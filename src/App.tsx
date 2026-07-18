@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
@@ -183,30 +183,20 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep the window at the design's 3:2 aspect ratio on resize (min size set in tauri.conf.json).
+  // Open at a standard size scaled to the screen (~85%, capped), centered. The user can then
+  // freely resize or maximize — no aspect-ratio snapping. Min size is set in tauri.conf.json.
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    const RATIO = 1200 / 800;
-    let adjusting = false;
-    let unlisten: (() => void) | undefined;
-    appWindow
-      .onResized(async ({ payload }) => {
-        if (adjusting) return;
-        const { width, height } = payload;
-        const targetHeight = Math.round(width / RATIO);
-        if (Math.abs(targetHeight - height) > 2) {
-          adjusting = true;
-          try {
-            await appWindow.setSize(new PhysicalSize(width, targetHeight));
-          } finally {
-            adjusting = false;
-          }
-        }
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => unlisten?.();
+    (async () => {
+      try {
+        const w = Math.min(Math.round(window.screen.availWidth * 0.85), 1600);
+        const h = Math.min(Math.round(window.screen.availHeight * 0.85), 1000);
+        await appWindow.setSize(new LogicalSize(w, h));
+        await appWindow.center();
+      } catch {
+        /* ignore — fall back to the configured default size */
+      }
+    })();
   }, []);
 
   return (

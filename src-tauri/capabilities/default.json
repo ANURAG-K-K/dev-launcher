@@ -9,6 +9,7 @@
     "dialog:default",
     "dialog:allow-confirm",
     "notification:default",
-    "core:window:allow-set-size"
+    "core:window:allow-set-size",
+    "core:window:allow-center"
   ]
 }
