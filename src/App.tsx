@@ -4,9 +4,9 @@ import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
-import type { DependencyEdge, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { cn } from "@/lib/utils";
-import { listDependencies } from "@/api";
+import { listDependencies, listProfiles } from "@/api";
 
 type View = "home" | "project" | "logs" | "settings";
 
@@ -51,16 +51,25 @@ function App() {
   const [statuses, setStatuses] = useState<Record<number, RepoStatus>>({});
   const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
   const [dependencies, setDependencies] = useState<DependencyEdge[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
 
   async function refreshDependencies(projectId: number) {
     setDependencies(await listDependencies(projectId));
   }
 
+  async function refreshProfiles(projectId: number) {
+    setProfiles(await listProfiles(projectId));
+  }
+
   useEffect(() => {
+    setActiveProfileId(null);
     if (project) {
       refreshDependencies(project.id);
+      refreshProfiles(project.id);
     } else {
       setDependencies([]);
+      setProfiles([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
@@ -92,6 +101,14 @@ function App() {
 
   function onRepoUpdated(repo: Repository) {
     setRepositories((prev) => prev.map((r) => (r.id === repo.id ? repo : r)));
+  }
+
+  function onRepositoriesReplaced(repos: Repository[]) {
+    setRepositories(repos);
+  }
+
+  function onProfilesChanged() {
+    if (project) refreshProfiles(project.id);
   }
 
   return (
@@ -152,10 +169,15 @@ function App() {
             repositories={repositories}
             statuses={statuses}
             dependencies={dependencies}
+            profiles={profiles}
+            activeProfileId={activeProfileId}
+            setActiveProfileId={setActiveProfileId}
             onScanned={applyResult}
             onOpenLogs={openLogs}
             onRepoUpdated={onRepoUpdated}
             onDependenciesChanged={() => project && refreshDependencies(project.id)}
+            onRepositoriesReplaced={onRepositoriesReplaced}
+            onProfilesChanged={onProfilesChanged}
           />
         )}
         {view === "logs" && (

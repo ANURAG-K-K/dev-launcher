@@ -58,3 +58,11 @@ export interface ExecuteResult {
   started: number[];
   skipped: number[];
 }
+
+/** A saved selection of repositories + a launch delay ("Launch Profile"). */
+export interface Profile {
+  id: number;
+  name: string;
+  launchDelayMs: number;
+  repositoryIds: number[];
+}

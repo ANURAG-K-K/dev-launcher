@@ -1,6 +1,18 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { executeProject, restartRepo, scanRepositories, setRepositoryEnabled, startRepo, stopAll, stopRepo } from "@/api";
-import type { DependencyEdge, ExecuteResult, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import {
+  applyProfile,
+  createProfile,
+  deleteProfile,
+  executeProject,
+  restartRepo,
+  scanRepositories,
+  setRepositoryEnabled,
+  startRepo,
+  stopAll,
+  stopRepo,
+  updateProfile,
+} from "@/api";
+import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 
 const ICON_BTN: CSSProperties = {
@@ -56,19 +68,29 @@ export function Project({
   repositories,
   statuses,
   dependencies,
+  profiles,
+  activeProfileId,
+  setActiveProfileId,
   onScanned,
   onOpenLogs,
   onRepoUpdated,
   onDependenciesChanged,
+  onRepositoriesReplaced,
+  onProfilesChanged,
 }: {
   project: ProjectT | null;
   repositories: Repository[];
   statuses: Record<number, RepoStatus>;
   dependencies: DependencyEdge[];
+  profiles: Profile[];
+  activeProfileId: number | null;
+  setActiveProfileId: (id: number | null) => void;
   onScanned: (result: ProjectWithRepos) => void;
   onOpenLogs: (repositoryId: number) => void;
   onRepoUpdated: (repo: Repository) => void;
   onDependenciesChanged: () => void;
+  onRepositoriesReplaced: (repos: Repository[]) => void;
+  onProfilesChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState<number | null>(null);
@@ -80,6 +102,10 @@ export function Project({
   const [executeResult, setExecuteResult] = useState<ExecuteResult | null>(null);
   const [executeError, setExecuteError] = useState("");
   const [stopBusy, setStopBusy] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
 
   // The execute summary is a one-shot outcome, not live state — auto-dismiss it so it can't go
   // stale as repos are started/stopped individually (the live "running" count below is the truth).
@@ -154,6 +180,77 @@ export function Project({
     }
   }
 
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
+  const enabledIds = repositories.filter((r) => r.enabled === 1).map((r) => r.id);
+
+  async function selectProfile(idStr: string) {
+    setProfileError("");
+    if (!idStr) {
+      setActiveProfileId(null);
+      return;
+    }
+    const id = Number(idStr);
+    const profile = profiles.find((p) => p.id === id);
+    setProfileBusy(true);
+    try {
+      const updatedRepos = await applyProfile(id);
+      onRepositoriesReplaced(updatedRepos);
+      if (profile) setLaunchDelayMs(profile.launchDelayMs);
+      setActiveProfileId(id);
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function saveNewProfile() {
+    const name = newProfileName.trim();
+    if (!name) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      const created = await createProfile(project!.id, name, launchDelayMs, enabledIds);
+      onProfilesChanged();
+      setActiveProfileId(created.id);
+      setNewProfileName("");
+      setSavingProfile(false);
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function updateActiveProfile() {
+    if (!activeProfile) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      await updateProfile(activeProfile.id, activeProfile.name, launchDelayMs, enabledIds);
+      onProfilesChanged();
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function deleteActiveProfile() {
+    if (!activeProfile) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      await deleteProfile(activeProfile.id);
+      onProfilesChanged();
+      setActiveProfileId(null);
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
   const runningCount = repositories.filter((r) => {
     const s = statuses[r.id]?.status;
     return s === "running" || s === "starting";
@@ -165,6 +262,100 @@ export function Project({
         <h1 style={{ fontSize: 32 }}>{project.name}</h1>
         <div className="mono text-muted" style={{ fontSize: 12 }}>{project.rootPath}</div>
       </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }} className="text-muted">
+            Profile
+            <select
+              value={activeProfileId ?? ""}
+              disabled={profileBusy}
+              onChange={(e) => selectProfile(e.target.value)}
+              style={{
+                padding: "6px 8px",
+                border: "1px solid var(--color-divider)",
+                background: "var(--color-bg)",
+                borderRadius: "var(--radius-md)",
+                color: "var(--color-text)",
+              }}
+            >
+              <option value="">— No profile —</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {!savingProfile && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setSavingProfile(true)}
+              disabled={profileBusy}
+            >
+              Save as profile
+            </button>
+          )}
+          {savingProfile && (
+            <>
+              <input
+                type="text"
+                autoFocus
+                placeholder="Profile name"
+                value={newProfileName}
+                onChange={(e) => setNewProfileName(e.target.value)}
+                style={{
+                  width: 160,
+                  padding: "6px 8px",
+                  border: "1px solid var(--color-divider)",
+                  background: "var(--color-bg)",
+                  borderRadius: "var(--radius-md)",
+                  color: "var(--color-text)",
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={saveNewProfile}
+                disabled={profileBusy || !newProfileName.trim()}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setSavingProfile(false);
+                  setNewProfileName("");
+                }}
+                disabled={profileBusy}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+
+          {activeProfile && !savingProfile && (
+            <>
+              <button type="button" className="btn btn-ghost" onClick={updateActiveProfile} disabled={profileBusy}>
+                Update
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={deleteActiveProfile} disabled={profileBusy}>
+                Delete
+              </button>
+            </>
+          )}
+
+          <span className="text-muted" style={{ fontSize: 11 }}>
+            Applying a profile sets which repositories are enabled.
+          </span>
+          {profileError && (
+            <span style={{ color: "var(--color-status-bad-fg)", fontSize: 11 }}>{profileError}</span>
+          )}
+        </div>
+      </div>
+
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <p className="text-muted" style={{ margin: 0 }}>

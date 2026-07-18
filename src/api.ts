@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { DependencyEdge, ExecuteResult, Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
+import type { DependencyEdge, ExecuteResult, Profile, Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -48,3 +48,18 @@ export const listDependencies = (projectId: number) =>
 
 export const setRepositoryDependencies = (repositoryId: number, dependsOn: number[]) =>
   invoke<void>("set_repository_dependencies", { repositoryId, dependsOn });
+
+export const listProfiles = (projectId: number) =>
+  invoke<Profile[]>("list_profiles", { projectId });
+
+export const createProfile = (projectId: number, name: string, launchDelayMs: number, repositoryIds: number[]) =>
+  invoke<Profile>("create_profile", { projectId, name, launchDelayMs, repositoryIds });
+
+export const updateProfile = (profileId: number, name: string, launchDelayMs: number, repositoryIds: number[]) =>
+  invoke<Profile>("update_profile", { profileId, name, launchDelayMs, repositoryIds });
+
+export const deleteProfile = (profileId: number) =>
+  invoke<void>("delete_profile", { profileId });
+
+export const applyProfile = (profileId: number) =>
+  invoke<Repository[]>("apply_profile", { profileId });
