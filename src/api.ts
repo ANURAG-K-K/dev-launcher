@@ -28,3 +28,11 @@ export const restartRepo = (repositoryId: number) =>
 
 export const setRepositoryEnabled = (repositoryId: number, enabled: boolean) =>
   invoke<Repository>("set_repository_enabled", { repositoryId, enabled });
+
+export const updateRepositoryConfig = (input: {
+  repositoryId: number;
+  packageManager: string;
+  command: string;
+  args: string;
+  envFile: string;
+}) => invoke<Repository>("update_repository_config", input);

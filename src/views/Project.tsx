@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { restartRepo, scanRepositories, setRepositoryEnabled, startRepo, stopRepo } from "@/api";
 import type { Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import { RepoEditDialog } from "./RepoEditDialog";
 
 const ICON_BTN: CSSProperties = {
   display: "inline-flex",
@@ -69,6 +70,7 @@ export function Project({
   const [rowBusy, setRowBusy] = useState<number | null>(null);
   const [rowError, setRowError] = useState<Record<number, string>>({});
   const [enabledBusy, setEnabledBusy] = useState<number | null>(null);
+  const [editingRepo, setEditingRepo] = useState<Repository | null>(null);
 
   if (!project) {
     return (
@@ -213,6 +215,10 @@ export function Project({
                         <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
                           <path d="M4 6h16M4 12h16M4 18h10" />
                         </IconButton>
+                        <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                        </IconButton>
                       </div>
                       {error && (
                         <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 4 }}>
@@ -226,6 +232,14 @@ export function Project({
             </tbody>
           </table>
         </div>
+      )}
+
+      {editingRepo && (
+        <RepoEditDialog
+          repo={editingRepo}
+          onClose={() => setEditingRepo(null)}
+          onRepoUpdated={onRepoUpdated}
+        />
       )}
     </div>
   );
