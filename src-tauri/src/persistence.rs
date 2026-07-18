@@ -279,18 +279,21 @@ pub async fn update_launch_history_item_exit(
     Ok(())
 }
 
-/// Sweep launches left `running` by a previous session (the app died, so those OS processes are
-/// gone): mark their items crashed and the runs failed (F13, startup reconciliation).
+/// Sweep launches left `running` by a previous session (the app closed, so those OS processes are
+/// gone). Mark their items `stopped` — not `crashed` — since a normal app quit stops them, and we
+/// can't distinguish a clean quit from a crash here (F13, startup reconciliation).
 pub async fn reconcile_stale_launches(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE launch_history_items SET status = 'crashed', stopped_at = ?
+        "UPDATE launch_history_items SET status = 'stopped', stopped_at = ?
          WHERE status IN ('running', 'pending', 'restarting') AND stopped_at IS NULL",
     )
     .bind(&now)
     .execute(pool)
     .await?;
-    sqlx::query("UPDATE launch_history SET status = 'failed', finished_at = ? WHERE status = 'running'")
+    // A run still 'running' at startup didn't finish cleanly; mark it completed (it dispatched)
+    // rather than failed, to match the neutral 'stopped' items.
+    sqlx::query("UPDATE launch_history SET status = 'completed', finished_at = ? WHERE status = 'running'")
         .bind(&now)
         .execute(pool)
         .await?;
