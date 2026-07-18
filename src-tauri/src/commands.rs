@@ -284,6 +284,74 @@ fn cycle_names(repos: &[persistence::Repository], cyclic: &[i64]) -> String {
     format!("dependency cycle involving: {}", names.join(", "))
 }
 
+// ── Repo actions: open folder / open terminal (F12) ─────────────────────────
+
+/// Open the repository's working directory in the system file explorer (F12).
+#[tauri::command]
+pub async fn open_repo_folder(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<(), AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&repo.path)
+            .spawn()
+            .map_err(|e| AppError::Launch(format!("failed to open folder: {e}")))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = repo;
+        Err(AppError::Launch("open folder is Windows-only in v1".into()))
+    }
+}
+
+/// Open an external terminal at the repository's working directory (F12). Honors the
+/// `terminal_behavior` setting — the "integrated" terminal is deferred (R6).
+#[tauri::command]
+pub async fn open_repo_terminal(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<(), AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
+
+    let settings: Settings = match persistence::get_setting(&state.pool, SETTINGS_KEY)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+    {
+        Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+        None => Settings::default(),
+    };
+    if settings.terminal_behavior == "integrated" {
+        return Err(AppError::Launch(
+            "Integrated terminal isn't available in v1 — set Terminal behavior to External in Settings.".into(),
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "cmd"])
+            .current_dir(&repo.path)
+            .spawn()
+            .map_err(|e| AppError::Launch(format!("failed to open terminal: {e}")))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = repo;
+        Err(AppError::Launch("open terminal is Windows-only in v1".into()))
+    }
+}
+
 // ── Settings (F14) ──────────────────────────────────────────────────────────
 
 /// Application settings (F14). Stored as a single JSON blob under the `app_settings` key.

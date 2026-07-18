@@ -70,6 +70,8 @@ pub fn run() {
             commands::update_repository_config,
             commands::set_repository_enabled,
             commands::remove_repository,
+            commands::open_repo_folder,
+            commands::open_repo_terminal,
             commands::list_dependencies,
             commands::set_repository_dependencies,
             commands::execute_project,

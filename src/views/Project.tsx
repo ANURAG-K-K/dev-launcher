@@ -4,6 +4,8 @@ import {
   createProfile,
   deleteProfile,
   executeProject,
+  openRepoFolder,
+  openRepoTerminal,
   restartRepo,
   scanRepositories,
   setRepositoryEnabled,
@@ -507,6 +509,22 @@ export function Project({
                         )}
                         <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
                           <path d="M4 6h16M4 12h16M4 18h10" />
+                        </IconButton>
+                        <IconButton
+                          title="Open Folder"
+                          disabled={busyRow}
+                          onClick={() => runAction(r.id, () => openRepoFolder(r.id))}
+                        >
+                          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                        </IconButton>
+                        <IconButton
+                          title="Open Terminal"
+                          disabled={busyRow}
+                          onClick={() => runAction(r.id, () => openRepoTerminal(r.id))}
+                        >
+                          <rect x="3" y="4" width="18" height="16" rx="2" />
+                          <polyline points="7 9 10 12 7 15" />
+                          <line x1="12" y1="15" x2="16" y2="15" />
                         </IconButton>
                         <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
                           <path d="M12 20h9" />

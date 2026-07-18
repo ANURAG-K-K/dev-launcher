@@ -67,6 +67,12 @@ export const deleteProfile = (profileId: number) =>
 export const applyProfile = (profileId: number) =>
   invoke<Repository[]>("apply_profile", { profileId });
 
+export const openRepoFolder = (repositoryId: number) =>
+  invoke<void>("open_repo_folder", { repositoryId });
+
+export const openRepoTerminal = (repositoryId: number) =>
+  invoke<void>("open_repo_terminal", { repositoryId });
+
 export const getSettings = () => invoke<Settings>("get_settings");
 
 export const updateSettings = (settings: Settings) =>
