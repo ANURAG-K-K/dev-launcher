@@ -6,9 +6,9 @@ import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
-import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
-import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, restartRepo } from "@/api";
 
 type View = "home" | "project" | "logs" | "settings";
 
@@ -56,6 +56,8 @@ function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
   const [recentProjects, setRecentProjects] = useState<ProjectT[]>([]);
+  const [settings, setSettings] = useState<SettingsT | null>(null);
+  const crashCountsRef = useRef<Record<number, number>>({});
 
   // Live mirror of repositories for use inside the []-deps event listener (avoids a stale closure).
   const reposRef = useRef<Repository[]>([]);
@@ -76,6 +78,26 @@ function App() {
     let granted = await isPermissionGranted();
     if (!granted) granted = (await requestPermission()) === "granted";
     if (granted) sendNotification({ title: "Repository crashed", body: `${name} exited unexpectedly.` });
+  }
+
+  /** Auto-restart a crashed repo if enabled (F14), capped per session to avoid crash loops. */
+  async function maybeAutoRestart(repositoryId: number) {
+    let s;
+    try {
+      s = await getSettings();
+    } catch {
+      return;
+    }
+    if (!s.autoRestart) return;
+    const counts = crashCountsRef.current;
+    const n = counts[repositoryId] ?? 0;
+    if (n >= 3) return; // ponytail: flat per-session cap, no backoff
+    counts[repositoryId] = n + 1;
+    try {
+      await restartRepo(repositoryId);
+    } catch {
+      /* ignore */
+    }
   }
 
   async function refreshDependencies(projectId: number) {
@@ -103,7 +125,10 @@ function App() {
     listen<RepoStatus>("repo_status_changed", (event) => {
       const payload = event.payload;
       setStatuses((prev) => ({ ...prev, [payload.repositoryId]: payload }));
-      if (payload.status === "crashed") void notifyCrash(payload.repositoryId);
+      if (payload.status === "crashed") {
+        void notifyCrash(payload.repositoryId);
+        void maybeAutoRestart(payload.repositoryId);
+      }
     }).then((fn) => {
       unlisten = fn;
     });
@@ -161,6 +186,7 @@ function App() {
       } catch {
         return;
       }
+      setSettings(settings);
       document.documentElement.dataset.theme = settings.theme;
 
       if (!settings.restoreLastProject) return;
@@ -275,6 +301,7 @@ function App() {
             project={project}
             repositories={repositories}
             statuses={statuses}
+            initialLaunchDelayMs={settings?.launchDelayMs ?? 1000}
             dependencies={dependencies}
             profiles={profiles}
             activeProfileId={activeProfileId}

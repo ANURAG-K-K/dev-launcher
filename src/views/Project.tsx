@@ -71,6 +71,7 @@ export function Project({
   project,
   repositories,
   statuses,
+  initialLaunchDelayMs,
   dependencies,
   profiles,
   activeProfileId,
@@ -85,6 +86,7 @@ export function Project({
   project: ProjectT | null;
   repositories: Repository[];
   statuses: Record<number, RepoStatus>;
+  initialLaunchDelayMs: number;
   dependencies: DependencyEdge[];
   profiles: Profile[];
   activeProfileId: number | null;
@@ -102,7 +104,7 @@ export function Project({
   const [enabledBusy, setEnabledBusy] = useState<number | null>(null);
   const [editingRepo, setEditingRepo] = useState<Repository | null>(null);
   const [executeBusy, setExecuteBusy] = useState(false);
-  const [launchDelayMs, setLaunchDelayMs] = useState(1000);
+  const [launchDelayMs, setLaunchDelayMs] = useState(initialLaunchDelayMs);
   const [executeResult, setExecuteResult] = useState<ExecuteResult | null>(null);
   const [executeError, setExecuteError] = useState("");
   const [stopBusy, setStopBusy] = useState(false);
