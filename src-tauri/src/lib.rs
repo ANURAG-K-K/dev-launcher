@@ -76,6 +76,7 @@ pub fn run() {
             commands::set_repository_dependencies,
             commands::execute_project,
             commands::stop_all,
+            commands::list_launch_history,
             commands::list_profiles,
             commands::create_profile,
             commands::update_profile,

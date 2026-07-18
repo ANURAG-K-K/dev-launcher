@@ -237,16 +237,36 @@ pub async fn execute_project(
     let order = launcher::topological_order(&runnable_nodes, &runnable_edges)
         .map_err(|cyclic| AppError::Cycle(cycle_names(&repos, &cyclic)))?;
 
+    // Record the run in launch history (F13). profile_id = the project's last-applied profile.
+    let profile_id = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .and_then(|p| p.last_profile_id);
+    let history_id = persistence::insert_launch_history(&state.pool, project_id, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+
     let mut started = Vec::new();
     for (i, id) in order.iter().enumerate() {
         let spec = launch_spec_for(&state, *id).await?;
-        if state.process_manager.start(*id, spec).await.is_ok() {
+        if let Ok(update) = state.process_manager.start(*id, spec).await {
             started.push(*id);
+            let _ = persistence::insert_launch_history_item(
+                &state.pool,
+                history_id,
+                *id,
+                update.pid.map(|p| p as i64),
+                "running",
+            )
+            .await;
         }
         if i + 1 < order.len() {
             tokio::time::sleep(std::time::Duration::from_millis(launch_delay_ms)).await;
         }
     }
+
+    let final_status = if started.is_empty() { "failed" } else { "completed" };
+    let _ = persistence::finish_launch_history(&state.pool, history_id, final_status).await;
 
     let skipped: Vec<i64> = enabled_ids
         .into_iter()
@@ -267,6 +287,73 @@ pub async fn stop_all(state: State<'_, AppState>, project_id: i64) -> Result<(),
         let _ = state.process_manager.stop(repo.id);
     }
     Ok(())
+}
+
+/// A repository within a launch record (F13, shaped for the UI).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchItemRecord {
+    pub repository_name: String,
+    pub status: String,
+    pub pid: Option<i64>,
+}
+
+/// A launch run with its repositories resolved to names (F13).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecord {
+    pub id: i64,
+    pub profile_name: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: String,
+    pub items: Vec<LaunchItemRecord>,
+}
+
+/// Recent launch runs for a project (F13).
+#[tauri::command]
+pub async fn list_launch_history(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<LaunchRecord>, AppError> {
+    let rows = persistence::list_launch_history(&state.pool, project_id, 25)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let profile_name = match row.profile_id {
+            Some(pid) => persistence::get_profile(&state.pool, pid)
+                .await
+                .map_err(|e| AppError::Persist(e.to_string()))?
+                .map(|p| p.name),
+            None => None,
+        };
+        let item_rows = persistence::list_launch_history_items(&state.pool, row.id)
+            .await
+            .map_err(|e| AppError::Persist(e.to_string()))?;
+        let mut items = Vec::with_capacity(item_rows.len());
+        for it in item_rows {
+            let repository_name = persistence::get_repository(&state.pool, it.repository_id)
+                .await
+                .map_err(|e| AppError::Persist(e.to_string()))?
+                .map(|r| r.name)
+                .unwrap_or_else(|| format!("#{}", it.repository_id));
+            items.push(LaunchItemRecord {
+                repository_name,
+                status: it.status,
+                pid: it.pid,
+            });
+        }
+        out.push(LaunchRecord {
+            id: row.id,
+            profile_name,
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            status: row.status,
+            items,
+        });
+    }
+    Ok(out)
 }
 
 /// Format a cycle's repo ids as a human-readable "name, name" list for an error message.

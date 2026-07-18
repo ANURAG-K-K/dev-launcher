@@ -179,6 +179,117 @@ pub async fn list_repositories(
     .await
 }
 
+/// A launch run row (F13).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LaunchHistoryRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub profile_id: Option<i64>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: String,
+}
+
+/// A per-repository row within a launch run (F13).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LaunchHistoryItemRow {
+    pub id: i64,
+    pub launch_history_id: i64,
+    pub repository_id: i64,
+    pub pid: Option<i64>,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub restart_count: i64,
+    pub started_at: Option<String>,
+    pub stopped_at: Option<String>,
+}
+
+/// Open a launch-history run (status 'running'); returns its id.
+pub async fn insert_launch_history(
+    pool: &SqlitePool,
+    project_id: i64,
+    profile_id: Option<i64>,
+) -> Result<i64, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let res = sqlx::query(
+        "INSERT INTO launch_history (project_id, profile_id, started_at, status) VALUES (?, ?, ?, 'running')",
+    )
+    .bind(project_id)
+    .bind(profile_id)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Record a repository within a launch run.
+pub async fn insert_launch_history_item(
+    pool: &SqlitePool,
+    launch_history_id: i64,
+    repository_id: i64,
+    pid: Option<i64>,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO launch_history_items (launch_history_id, repository_id, pid, status, started_at)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(launch_history_id)
+    .bind(repository_id)
+    .bind(pid)
+    .bind(status)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Close out a launch run with a terminal status.
+pub async fn finish_launch_history(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE launch_history SET status = ?, finished_at = ? WHERE id = ?")
+        .bind(status)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Recent launch runs for a project, newest first.
+pub async fn list_launch_history(
+    pool: &SqlitePool,
+    project_id: i64,
+    limit: i64,
+) -> Result<Vec<LaunchHistoryRow>, sqlx::Error> {
+    sqlx::query_as::<_, LaunchHistoryRow>(
+        "SELECT id, project_id, profile_id, started_at, finished_at, status
+         FROM launch_history WHERE project_id = ? ORDER BY started_at DESC LIMIT ?",
+    )
+    .bind(project_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// The repository items of a launch run.
+pub async fn list_launch_history_items(
+    pool: &SqlitePool,
+    launch_history_id: i64,
+) -> Result<Vec<LaunchHistoryItemRow>, sqlx::Error> {
+    sqlx::query_as::<_, LaunchHistoryItemRow>(
+        "SELECT * FROM launch_history_items WHERE launch_history_id = ? ORDER BY id",
+    )
+    .bind(launch_history_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Read a single settings value by key (F14).
 pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
     let row = sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = ?")
