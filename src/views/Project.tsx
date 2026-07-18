@@ -4,6 +4,7 @@ import {
   createProfile,
   deleteProfile,
   executeProject,
+  gitStatusProject,
   openRepoFolder,
   openRepoTerminal,
   restartRepo,
@@ -16,7 +17,7 @@ import {
   removeRepository,
 } from "@/api";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 
 const ICON_BTN: CSSProperties = {
@@ -112,6 +113,7 @@ export function Project({
   const [profileError, setProfileError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
+  const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
 
   // The execute summary is a one-shot outcome, not live state — auto-dismiss it so it can't go
   // stale as repos are started/stopped individually (the live "running" count below is the truth).
@@ -120,6 +122,15 @@ export function Project({
     const t = setTimeout(() => setExecuteResult(null), 5000);
     return () => clearTimeout(t);
   }, [executeResult]);
+
+  async function loadGitStatus(projectId: number) {
+    const list = await gitStatusProject(projectId);
+    setGitByRepo(Object.fromEntries(list.map((g) => [g.repositoryId, g])));
+  }
+
+  useEffect(() => {
+    if (project) void loadGitStatus(project.id);
+  }, [project?.id]);
 
   if (!project) {
     return (
@@ -133,6 +144,7 @@ export function Project({
     setBusy(true);
     try {
       onScanned(await scanRepositories(project!.id));
+      await loadGitStatus(project!.id);
     } finally {
       setBusy(false);
     }
@@ -435,6 +447,7 @@ export function Project({
               <tr>
                 <th>Enabled</th>
                 <th>Repository</th>
+                <th>Branch</th>
                 <th>PID</th>
                 <th>Package Manager</th>
                 <th>Command</th>
@@ -461,6 +474,30 @@ export function Project({
                       />
                     </td>
                     <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {gitByRepo[r.id] ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span className="mono">{gitByRepo[r.id].branch}</span>
+                          {gitByRepo[r.id].dirty && (
+                            <span title="Uncommitted changes" style={{ color: "var(--color-status-bad-fg)" }}>
+                              ●
+                            </span>
+                          )}
+                          {(gitByRepo[r.id].ahead > 0 || gitByRepo[r.id].behind > 0) && (
+                            <span className="text-muted mono" style={{ fontSize: 11 }}>
+                              {gitByRepo[r.id].ahead > 0 && (
+                                <span title="Commits ahead of upstream">↑{gitByRepo[r.id].ahead}</span>
+                              )}
+                              {gitByRepo[r.id].behind > 0 && (
+                                <span title="Commits behind upstream">↓{gitByRepo[r.id].behind}</span>
+                              )}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
                     <td className="mono text-muted" style={{ fontSize: 12 }}>
                       {running && repoStatus?.pid != null ? repoStatus.pid : "—"}
                     </td>

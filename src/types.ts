@@ -54,6 +54,15 @@ export interface DependencyEdge {
   dependsOnRepositoryId: number;
 }
 
+/** Per-repository git status; absent from `gitStatusProject`'s result means "not a git repo". */
+export interface RepoGitStatus {
+  repositoryId: number;
+  branch: string;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
+}
+
 export interface ExecuteResult {
   started: number[];
   skipped: number[];
