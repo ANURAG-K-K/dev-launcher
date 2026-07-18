@@ -131,7 +131,7 @@ export function Settings() {
           <option value="external">External</option>
         </select>
       </div>
-      <div>
+      <div style={{ marginBottom: 28 }}>
         <label style={{ display: "block", marginBottom: 6 }}>Log history (days)</label>
         <input
           type="number"
@@ -140,6 +140,20 @@ export function Settings() {
           onChange={(e) => set("logRetention", Math.max(0, Number(e.target.value)))}
         />
       </div>
+
+      <div className="sectiontitle" style={{ padding: "0 0 8px" }}>Notifications</div>
+      <div className="hr" style={{ margin: "0 0 18px" }} />
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          type="checkbox"
+          checked={settings.notificationsEnabled}
+          onChange={(e) => set("notificationsEnabled", e.target.checked)}
+        />
+        Enable desktop notifications
+      </label>
+      <p className="text-muted" style={{ margin: "6px 0 0" }}>
+        Sends a desktop notification when a repository crashes.
+      </p>
     </div>
   );
 }

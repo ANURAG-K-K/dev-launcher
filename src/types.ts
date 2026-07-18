@@ -77,4 +77,5 @@ export interface Settings {
   autoRestart: boolean;
   terminalBehavior: "integrated" | "external";
   logRetention: number;
+  notificationsEnabled: boolean;
 }

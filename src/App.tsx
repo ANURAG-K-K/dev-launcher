@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
@@ -54,6 +55,27 @@ function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
 
+  // Live mirror of repositories for use inside the []-deps event listener (avoids a stale closure).
+  const reposRef = useRef<Repository[]>([]);
+  useEffect(() => {
+    reposRef.current = repositories;
+  }, [repositories]);
+
+  /** Notify on crash (F15), gated by the live setting — read fresh so a toggle takes effect at once. */
+  async function notifyCrash(repositoryId: number) {
+    let settings;
+    try {
+      settings = await getSettings();
+    } catch {
+      return;
+    }
+    if (!settings.notificationsEnabled) return;
+    const name = reposRef.current.find((r) => r.id === repositoryId)?.name ?? `#${repositoryId}`;
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    if (granted) sendNotification({ title: "Repository crashed", body: `${name} exited unexpectedly.` });
+  }
+
   async function refreshDependencies(projectId: number) {
     setDependencies(await listDependencies(projectId));
   }
@@ -79,6 +101,7 @@ function App() {
     listen<RepoStatus>("repo_status_changed", (event) => {
       const payload = event.payload;
       setStatuses((prev) => ({ ...prev, [payload.repositoryId]: payload }));
+      if (payload.status === "crashed") void notifyCrash(payload.repositoryId);
     }).then((fn) => {
       unlisten = fn;
     });
