@@ -179,6 +179,25 @@ pub async fn list_repositories(
     .await
 }
 
+/// Read a single settings value by key (F14).
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Upsert a single settings value by key (F14).
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// A launch profile row (F6). Member repositories are stored separately in `profile_repositories`.
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]

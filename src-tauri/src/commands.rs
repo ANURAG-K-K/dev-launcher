@@ -284,6 +284,63 @@ fn cycle_names(repos: &[persistence::Repository], cyclic: &[i64]) -> String {
     format!("dependency cycle involving: {}", names.join(", "))
 }
 
+// ── Settings (F14) ──────────────────────────────────────────────────────────
+
+/// Application settings (F14). Stored as a single JSON blob under the `app_settings` key.
+/// `#[serde(default)]` keeps old stored blobs forward-compatible as fields are added.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Settings {
+    pub theme: String,
+    pub launch_delay_ms: i64,
+    pub auto_detect: bool,
+    pub restore_last_project: bool,
+    pub restore_last_selection: bool,
+    pub auto_restart: bool,
+    pub terminal_behavior: String,
+    pub log_retention: i64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: "system".into(),
+            launch_delay_ms: 1000,
+            auto_detect: true,
+            restore_last_project: false,
+            restore_last_selection: true,
+            auto_restart: false,
+            terminal_behavior: "external".into(),
+            log_retention: 1000,
+        }
+    }
+}
+
+const SETTINGS_KEY: &str = "app_settings";
+
+#[tauri::command]
+pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
+    match persistence::get_setting(&state.pool, SETTINGS_KEY)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+    {
+        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        None => Ok(Settings::default()),
+    }
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<Settings, AppError> {
+    let json = serde_json::to_string(&settings).map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::set_setting(&state.pool, SETTINGS_KEY, &json)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    Ok(settings)
+}
+
 // ── Launch profiles (F6) ────────────────────────────────────────────────────
 
 /// A launch profile: a named, ordered selection of repositories + a launch delay.
