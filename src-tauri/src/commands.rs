@@ -106,6 +106,44 @@ async fn discover_and_persist(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Update a repository's command configuration (F5), returning the updated row.
+/// Empty strings clear the corresponding override (revert to the detected default).
+#[tauri::command]
+pub async fn update_repository_config(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    package_manager: String,
+    command: String,
+    args: String,
+    env_file: String,
+) -> Result<persistence::Repository, AppError> {
+    const VALID_PM: [&str; 4] = ["npm", "pnpm", "yarn", "bun"];
+    if !VALID_PM.contains(&package_manager.as_str()) {
+        return Err(AppError::Persist(format!(
+            "invalid package manager: {package_manager}"
+        )));
+    }
+    let opt = |s: String| {
+        let t = s.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    };
+    let (command, args, env_file) = (opt(command), opt(args), opt(env_file));
+    persistence::update_repository_config(
+        &state.pool,
+        repository_id,
+        &package_manager,
+        command.as_deref(),
+        args.as_deref(),
+        env_file.as_deref(),
+    )
+    .await
+    .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Enable/disable a repository (F4), returning the updated row.
 #[tauri::command]
 pub async fn set_repository_enabled(
@@ -189,12 +227,22 @@ async fn launch_spec_for(
     }
     let command_line = tokens.join(" ");
 
+    // Load env vars from the repo's env file (F5), resolved relative to the repo dir. Best-effort:
+    // a missing/unreadable env file is skipped (the process just runs without those vars).
+    let env = repo
+        .env_file
+        .as_deref()
+        .filter(|f| !f.is_empty())
+        .map(|f| load_env_file(&repo.path, f))
+        .unwrap_or_default();
+
     #[cfg(windows)]
     {
         Ok(LaunchSpec {
             program: "cmd".to_string(),
             args: vec!["/C".to_string(), command_line],
             cwd: repo.path,
+            env,
         })
     }
     #[cfg(not(windows))]
@@ -203,6 +251,36 @@ async fn launch_spec_for(
             program: "sh".to_string(),
             args: vec!["-c".to_string(), command_line],
             cwd: repo.path,
+            env,
         })
     }
+}
+
+/// Parse a simple `.env` file (KEY=VALUE per line; `#` comments and blanks ignored; surrounding
+/// double quotes on the value stripped). `env_file` may be absolute or relative to `repo_path`.
+/// ponytail: naive parser — no multiline/escape handling; upgrade to a dotenv crate if needed.
+fn load_env_file(repo_path: &str, env_file: &str) -> Vec<(String, String)> {
+    let path = {
+        let p = std::path::Path::new(env_file);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::path::Path::new(repo_path).join(env_file)
+        }
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| {
+            (
+                k.trim().to_string(),
+                v.trim().trim_matches('"').to_string(),
+            )
+        })
+        .collect()
 }

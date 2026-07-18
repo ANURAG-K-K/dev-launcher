@@ -52,6 +52,8 @@ pub struct LaunchSpec {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: String,
+    /// Extra environment variables (from the repo's env file, F5).
+    pub env: Vec<(String, String)>,
 }
 
 struct Tracked {
@@ -165,6 +167,7 @@ impl ProcessManager {
         let mut cmd = tokio::process::Command::new(&spec.program);
         cmd.args(&spec.args)
             .current_dir(&spec.cwd)
+            .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(false);

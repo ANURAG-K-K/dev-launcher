@@ -64,6 +64,7 @@ pub fn run() {
             commands::open_project,
             commands::scan_repositories,
             commands::list_recent_projects,
+            commands::update_repository_config,
             commands::set_repository_enabled,
             commands::start_repo,
             commands::stop_repo,

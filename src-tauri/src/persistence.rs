@@ -195,6 +195,36 @@ pub async fn get_repository(pool: &SqlitePool, id: i64) -> Result<Option<Reposit
         .await
 }
 
+/// Update a repository's command configuration (F5), returning the updated row.
+/// `command`/`args`/`env_file` = None clears the override (repo reverts to the detected default).
+pub async fn update_repository_config(
+    pool: &SqlitePool,
+    id: i64,
+    package_manager: &str,
+    command: Option<&str>,
+    args: Option<&str>,
+    env_file: Option<&str>,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE repositories
+         SET package_manager = ?, command = ?, args = ?, env_file = ?, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(package_manager)
+    .bind(command)
+    .bind(args)
+    .bind(env_file)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 /// Toggle a repository's `enabled` flag (F4), returning the updated row.
 pub async fn set_repository_enabled(
     pool: &SqlitePool,
