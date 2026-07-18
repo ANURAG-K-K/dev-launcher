@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { DependencyEdge, ExecuteResult, Profile, Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
+import type { DependencyEdge, ExecuteResult, Profile, Project, ProjectWithRepos, RepoStatus, Repository, Settings } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -66,3 +66,8 @@ export const deleteProfile = (profileId: number) =>
 
 export const applyProfile = (profileId: number) =>
   invoke<Repository[]>("apply_profile", { profileId });
+
+export const getSettings = () => invoke<Settings>("get_settings");
+
+export const updateSettings = (settings: Settings) =>
+  invoke<Settings>("update_settings", { settings });

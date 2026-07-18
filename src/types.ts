@@ -66,3 +66,15 @@ export interface Profile {
   launchDelayMs: number;
   repositoryIds: number[];
 }
+
+/** Mirrors the Rust `Settings` (serde camelCase). */
+export interface Settings {
+  theme: "light" | "dark" | "system";
+  launchDelayMs: number;
+  autoDetect: boolean;
+  restoreLastProject: boolean;
+  restoreLastSelection: boolean;
+  autoRestart: boolean;
+  terminalBehavior: "integrated" | "external";
+  logRetention: number;
+}

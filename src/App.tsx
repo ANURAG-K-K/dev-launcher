@@ -6,7 +6,7 @@ import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { cn } from "@/lib/utils";
-import { listDependencies, listProfiles } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject } from "@/api";
 
 type View = "home" | "project" | "logs" | "settings";
 
@@ -110,6 +110,35 @@ function App() {
   function onProfilesChanged() {
     if (project) refreshProfiles(project.id);
   }
+
+  useEffect(() => {
+    async function restore() {
+      let settings;
+      try {
+        settings = await getSettings();
+      } catch {
+        return;
+      }
+      document.documentElement.dataset.theme = settings.theme;
+
+      if (!settings.restoreLastProject) return;
+      try {
+        const recent = await listRecentProjects();
+        if (recent.length === 0) return;
+        const result = await openProject(recent[0].rootPath);
+        applyResult(result);
+
+        if (settings.restoreLastSelection && result.project.lastProfileId != null) {
+          const repos = await applyProfile(result.project.lastProfileId);
+          onRepositoriesReplaced(repos);
+        }
+      } catch {
+        // Folder deleted, project missing, etc. Fall back to Home.
+      }
+    }
+    restore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
