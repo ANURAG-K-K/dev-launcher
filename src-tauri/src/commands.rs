@@ -446,6 +446,29 @@ pub async fn update_repository_config(
     .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Remove a repository from a project (F16, soft delete). Stops it first if running (FR-32),
+/// preserves history, and returns the project's remaining active repositories.
+#[tauri::command]
+pub async fn remove_repository(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<Vec<persistence::Repository>, AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("repository {repository_id} not found")))?;
+
+    // Stop it first if it's running (ignore "not running").
+    let _ = state.process_manager.stop(repository_id);
+
+    persistence::remove_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::list_repositories(&state.pool, repo.project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Enable/disable a repository (F4), returning the updated row.
 #[tauri::command]
 pub async fn set_repository_enabled(

@@ -11,7 +11,9 @@ import {
   stopAll,
   stopRepo,
   updateProfile,
+  removeRepository,
 } from "@/api";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 
@@ -178,6 +180,17 @@ export function Project({
     } finally {
       setEnabledBusy(null);
     }
+  }
+
+  async function removeRepo(repo: Repository) {
+    const ok = await confirm(
+      `Remove "${repo.name}"? It's stopped and hidden from the list; its launch history is kept, and re-scanning restores it.`,
+      { title: "Remove repository", kind: "warning" },
+    );
+    if (!ok) return;
+    await runAction(repo.id, async () => {
+      onRepositoriesReplaced(await removeRepository(repo.id));
+    });
   }
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
@@ -498,6 +511,16 @@ export function Project({
                         <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
                           <path d="M12 20h9" />
                           <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                        </IconButton>
+                        <IconButton
+                          title="Remove"
+                          color="var(--color-status-bad-fg)"
+                          disabled={busyRow}
+                          onClick={() => removeRepo(r)}
+                        >
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
                         </IconButton>
                       </div>
                       {error && (

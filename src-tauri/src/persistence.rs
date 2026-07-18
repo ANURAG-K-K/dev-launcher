@@ -424,6 +424,19 @@ pub async fn update_repository_config(
         .await
 }
 
+/// Soft-remove a repository (F16): set `removed_at` so it drops out of the active list while its
+/// `launch_history_items` are preserved. Rediscovery un-removes it (see `upsert_repository`).
+pub async fn remove_repository(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE repositories SET removed_at = ?, updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Toggle a repository's `enabled` flag (F4), returning the updated row.
 pub async fn set_repository_enabled(
     pool: &SqlitePool,
