@@ -179,6 +179,163 @@ pub async fn list_repositories(
     .await
 }
 
+/// A launch profile row (F6). Member repositories are stored separately in `profile_repositories`.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub name: String,
+    pub launch_delay_ms: i64,
+}
+
+/// Create a profile, returning its new id (F6).
+pub async fn create_profile(
+    pool: &SqlitePool,
+    project_id: i64,
+    name: &str,
+    launch_delay_ms: i64,
+) -> Result<i64, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let res = sqlx::query(
+        "INSERT INTO profiles (project_id, name, launch_delay_ms, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(project_id)
+    .bind(name)
+    .bind(launch_delay_ms)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(res.last_insert_rowid())
+}
+
+/// Update a profile's name + launch delay.
+pub async fn update_profile_meta(
+    pool: &SqlitePool,
+    profile_id: i64,
+    name: &str,
+    launch_delay_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE profiles SET name = ?, launch_delay_ms = ?, updated_at = ? WHERE id = ?")
+        .bind(name)
+        .bind(launch_delay_ms)
+        .bind(&now)
+        .bind(profile_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete a profile (cascades to its `profile_repositories`).
+pub async fn delete_profile(pool: &SqlitePool, profile_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM profiles WHERE id = ?")
+        .bind(profile_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// List a project's profiles (metadata only), ordered by name.
+pub async fn list_profiles(
+    pool: &SqlitePool,
+    project_id: i64,
+) -> Result<Vec<ProfileRow>, sqlx::Error> {
+    sqlx::query_as::<_, ProfileRow>(
+        "SELECT id, project_id, name, launch_delay_ms FROM profiles WHERE project_id = ? ORDER BY name",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Fetch a single profile's metadata.
+pub async fn get_profile(
+    pool: &SqlitePool,
+    profile_id: i64,
+) -> Result<Option<ProfileRow>, sqlx::Error> {
+    sqlx::query_as::<_, ProfileRow>(
+        "SELECT id, project_id, name, launch_delay_ms FROM profiles WHERE id = ?",
+    )
+    .bind(profile_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Replace a profile's member repositories (ordered enabled selection).
+pub async fn set_profile_members(
+    pool: &SqlitePool,
+    profile_id: i64,
+    repository_ids: &[i64],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM profile_repositories WHERE profile_id = ?")
+        .bind(profile_id)
+        .execute(&mut *tx)
+        .await?;
+    for (idx, rid) in repository_ids.iter().enumerate() {
+        sqlx::query(
+            "INSERT OR IGNORE INTO profile_repositories
+                (profile_id, repository_id, enabled, launch_order)
+             VALUES (?, ?, 1, ?)",
+        )
+        .bind(profile_id)
+        .bind(rid)
+        .bind(idx as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// A profile's member repository ids, in launch order.
+pub async fn list_profile_members(
+    pool: &SqlitePool,
+    profile_id: i64,
+) -> Result<Vec<i64>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (i64,)>(
+        "SELECT repository_id FROM profile_repositories WHERE profile_id = ? ORDER BY launch_order",
+    )
+    .bind(profile_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(r,)| r).collect())
+}
+
+/// Apply a profile: enable its member repos, disable all others in the project, and record it as
+/// the project's last-used profile (F6 + restore-last-selection, F14).
+pub async fn apply_profile(
+    pool: &SqlitePool,
+    project_id: i64,
+    profile_id: i64,
+    member_ids: &[i64],
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE repositories SET enabled = 0, updated_at = ? WHERE project_id = ?")
+        .bind(&now)
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    for rid in member_ids {
+        sqlx::query("UPDATE repositories SET enabled = 1, updated_at = ? WHERE id = ? AND project_id = ?")
+            .bind(&now)
+            .bind(rid)
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE projects SET last_profile_id = ?, updated_at = ? WHERE id = ?")
+        .bind(profile_id)
+        .bind(&now)
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
 /// All dependency edges within a project, as `(repository_id, depends_on_repository_id)` (F8).
 pub async fn list_dependencies(
     pool: &SqlitePool,

@@ -284,6 +284,130 @@ fn cycle_names(repos: &[persistence::Repository], cyclic: &[i64]) -> String {
     format!("dependency cycle involving: {}", names.join(", "))
 }
 
+// ── Launch profiles (F6) ────────────────────────────────────────────────────
+
+/// A launch profile: a named, ordered selection of repositories + a launch delay.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Profile {
+    pub id: i64,
+    pub name: String,
+    pub launch_delay_ms: i64,
+    pub repository_ids: Vec<i64>,
+}
+
+async fn build_profile(
+    pool: &sqlx::SqlitePool,
+    row: persistence::ProfileRow,
+) -> Result<Profile, AppError> {
+    let repository_ids = persistence::list_profile_members(pool, row.id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    Ok(Profile {
+        id: row.id,
+        name: row.name,
+        launch_delay_ms: row.launch_delay_ms,
+        repository_ids,
+    })
+}
+
+#[tauri::command]
+pub async fn list_profiles(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<Profile>, AppError> {
+    let rows = persistence::list_profiles(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(build_profile(&state.pool, row).await?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn create_profile(
+    state: State<'_, AppState>,
+    project_id: i64,
+    name: String,
+    launch_delay_ms: i64,
+    repository_ids: Vec<i64>,
+) -> Result<Profile, AppError> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::Persist("profile name is required".into()));
+    }
+    let id = persistence::create_profile(&state.pool, project_id, &name, launch_delay_ms)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::set_profile_members(&state.pool, id, &repository_ids)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let row = persistence::get_profile(&state.pool, id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist("profile not found after create".into()))?;
+    build_profile(&state.pool, row).await
+}
+
+#[tauri::command]
+pub async fn update_profile(
+    state: State<'_, AppState>,
+    profile_id: i64,
+    name: String,
+    launch_delay_ms: i64,
+    repository_ids: Vec<i64>,
+) -> Result<Profile, AppError> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::Persist("profile name is required".into()));
+    }
+    persistence::update_profile_meta(&state.pool, profile_id, &name, launch_delay_ms)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::set_profile_members(&state.pool, profile_id, &repository_ids)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let row = persistence::get_profile(&state.pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist("profile not found".into()))?;
+    build_profile(&state.pool, row).await
+}
+
+#[tauri::command]
+pub async fn delete_profile(
+    state: State<'_, AppState>,
+    profile_id: i64,
+) -> Result<(), AppError> {
+    persistence::delete_profile(&state.pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// Apply a profile: enable its members, disable the rest, record it as the last-used profile.
+/// Returns the full updated repository list.
+#[tauri::command]
+pub async fn apply_profile(
+    state: State<'_, AppState>,
+    profile_id: i64,
+) -> Result<Vec<persistence::Repository>, AppError> {
+    let row = persistence::get_profile(&state.pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist("profile not found".into()))?;
+    let members = persistence::list_profile_members(&state.pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::apply_profile(&state.pool, row.project_id, profile_id, &members)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::list_repositories(&state.pool, row.project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Update a repository's command configuration (F5), returning the updated row.
 /// Empty strings clear the corresponding override (revert to the detected default).
 #[tauri::command]
