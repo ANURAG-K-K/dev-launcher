@@ -47,3 +47,14 @@ export interface RepoLogLine {
   line: string;
   timestamp: string;
 }
+
+/** A dependency edge: repositoryId depends on dependsOnRepositoryId. */
+export interface DependencyEdge {
+  repositoryId: number;
+  dependsOnRepositoryId: number;
+}
+
+export interface ExecuteResult {
+  started: number[];
+  skipped: number[];
+}

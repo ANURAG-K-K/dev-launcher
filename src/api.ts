@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
+import type { DependencyEdge, ExecuteResult, Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -36,3 +36,15 @@ export const updateRepositoryConfig = (input: {
   args: string;
   envFile: string;
 }) => invoke<Repository>("update_repository_config", input);
+
+export const executeProject = (projectId: number, launchDelayMs: number) =>
+  invoke<ExecuteResult>("execute_project", { projectId, launchDelayMs });
+
+export const stopAll = (projectId: number) =>
+  invoke<void>("stop_all", { projectId });
+
+export const listDependencies = (projectId: number) =>
+  invoke<DependencyEdge[]>("list_dependencies", { projectId });
+
+export const setRepositoryDependencies = (repositoryId: number, dependsOn: number[]) =>
+  invoke<void>("set_repository_dependencies", { repositoryId, dependsOn });

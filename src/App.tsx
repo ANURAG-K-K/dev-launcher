@@ -4,8 +4,9 @@ import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
-import type { Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
+import type { DependencyEdge, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { cn } from "@/lib/utils";
+import { listDependencies } from "@/api";
 
 type View = "home" | "project" | "logs" | "settings";
 
@@ -49,6 +50,20 @@ function App() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [statuses, setStatuses] = useState<Record<number, RepoStatus>>({});
   const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
+  const [dependencies, setDependencies] = useState<DependencyEdge[]>([]);
+
+  async function refreshDependencies(projectId: number) {
+    setDependencies(await listDependencies(projectId));
+  }
+
+  useEffect(() => {
+    if (project) {
+      refreshDependencies(project.id);
+    } else {
+      setDependencies([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -67,6 +82,7 @@ function App() {
     setProject(result.project);
     setRepositories(result.repositories);
     setView("project");
+    refreshDependencies(result.project.id);
   }
 
   function openLogs(repositoryId: number) {
@@ -135,9 +151,11 @@ function App() {
             project={project}
             repositories={repositories}
             statuses={statuses}
+            dependencies={dependencies}
             onScanned={applyResult}
             onOpenLogs={openLogs}
             onRepoUpdated={onRepoUpdated}
+            onDependenciesChanged={() => project && refreshDependencies(project.id)}
           />
         )}
         {view === "logs" && (

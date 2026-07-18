@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from "react";
-import { updateRepositoryConfig } from "@/api";
-import type { Repository } from "@/types";
+import { setRepositoryDependencies, updateRepositoryConfig } from "@/api";
+import type { DependencyEdge, Repository } from "@/types";
 
 const INPUT_STYLE: CSSProperties = {
   width: "100%",
@@ -39,19 +39,34 @@ function Field({
 /** Modal dialog to edit per-repository launch config (package manager, command, args, env file). */
 export function RepoEditDialog({
   repo,
+  repositories,
+  dependencies,
   onClose,
   onRepoUpdated,
+  onDependenciesChanged,
 }: {
   repo: Repository;
+  repositories: Repository[];
+  dependencies: DependencyEdge[];
   onClose: () => void;
   onRepoUpdated: (repo: Repository) => void;
+  onDependenciesChanged: () => void;
 }) {
   const [packageManager, setPackageManager] = useState(repo.packageManager);
   const [command, setCommand] = useState(repo.command ?? "");
   const [args, setArgs] = useState(repo.args ?? "");
   const [envFile, setEnvFile] = useState(repo.envFile ?? "");
+  const [dependsOn, setDependsOn] = useState<number[]>(
+    dependencies.filter((d) => d.repositoryId === repo.id).map((d) => d.dependsOnRepositoryId),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const otherRepos = repositories.filter((r) => r.id !== repo.id);
+
+  function toggleDependsOn(id: number, checked: boolean) {
+    setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
+  }
 
   async function save() {
     setBusy(true);
@@ -64,7 +79,9 @@ export function RepoEditDialog({
         args,
         envFile,
       });
+      await setRepositoryDependencies(repo.id, dependsOn);
       onRepoUpdated(updated);
+      onDependenciesChanged();
       onClose();
     } catch (err) {
       setError(String(err));
@@ -136,6 +153,25 @@ export function RepoEditDialog({
             value={envFile}
             onChange={(e) => setEnvFile(e.target.value)}
           />
+        </Field>
+
+        <Field label="Depends on" helper="Repositories that must be started before this one.">
+          {otherRepos.length === 0 ? (
+            <div className="text-muted" style={{ fontSize: 12 }}>No other repositories in this project.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 160, overflowY: "auto" }}>
+              {otherRepos.map((r) => (
+                <label key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <input
+                    type="checkbox"
+                    checked={dependsOn.includes(r.id)}
+                    onChange={(e) => toggleDependsOn(r.id, e.target.checked)}
+                  />
+                  {r.name}
+                </label>
+              ))}
+            </div>
+          )}
         </Field>
 
         {error && (
