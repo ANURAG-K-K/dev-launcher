@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
-import type { Project as ProjectT, ProjectWithRepos, Repository } from "@/types";
+import type { Project as ProjectT, ProjectWithRepos, RepoStatus, Repository } from "@/types";
 import { cn } from "@/lib/utils";
 
 type View = "home" | "project" | "logs" | "settings";
@@ -46,11 +47,35 @@ function App() {
   const [view, setView] = useState<View>("home");
   const [project, setProject] = useState<ProjectT | null>(null);
   const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [statuses, setStatuses] = useState<Record<number, RepoStatus>>({});
+  const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<RepoStatus>("repo_status_changed", (event) => {
+      const payload = event.payload;
+      setStatuses((prev) => ({ ...prev, [payload.repositoryId]: payload }));
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   function applyResult(result: ProjectWithRepos) {
     setProject(result.project);
     setRepositories(result.repositories);
     setView("project");
+  }
+
+  function openLogs(repositoryId: number) {
+    setSelectedRepoId(repositoryId);
+    setView("logs");
+  }
+
+  function onRepoUpdated(repo: Repository) {
+    setRepositories((prev) => prev.map((r) => (r.id === repo.id ? repo : r)));
   }
 
   return (
@@ -105,8 +130,19 @@ function App() {
 
       <main style={{ flex: 1, minWidth: 0 }}>
         {view === "home" && <Home onOpened={applyResult} />}
-        {view === "project" && <Project project={project} repositories={repositories} onScanned={applyResult} />}
-        {view === "logs" && <Logs />}
+        {view === "project" && (
+          <Project
+            project={project}
+            repositories={repositories}
+            statuses={statuses}
+            onScanned={applyResult}
+            onOpenLogs={openLogs}
+            onRepoUpdated={onRepoUpdated}
+          />
+        )}
+        {view === "logs" && (
+          <Logs repositories={repositories} selectedRepoId={selectedRepoId} onSelectRepo={setSelectedRepoId} />
+        )}
         {view === "settings" && <Settings />}
       </main>
     </div>

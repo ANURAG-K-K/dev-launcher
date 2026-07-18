@@ -30,3 +30,20 @@ export interface ProjectWithRepos {
   project: Project;
   repositories: Repository[];
 }
+
+/** Payload of the `repo_status_changed` event; also the return type of start/restart_repo. */
+export interface RepoStatus {
+  repositoryId: number;
+  status: "starting" | "running" | "stopped" | "crashed";
+  pid: number | null;
+  exitCode: number | null;
+  restartCount: number;
+}
+
+/** Payload of the `repo_log` event. */
+export interface RepoLogLine {
+  repositoryId: number;
+  stream: "stdout" | "stderr";
+  line: string;
+  timestamp: string;
+}

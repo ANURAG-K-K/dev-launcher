@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { Project, ProjectWithRepos } from "./types";
+import type { Project, ProjectWithRepos, RepoStatus, Repository } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -16,3 +16,15 @@ export const scanRepositories = (projectId: number) =>
 
 export const listRecentProjects = () =>
   invoke<Project[]>("list_recent_projects");
+
+export const startRepo = (repositoryId: number) =>
+  invoke<RepoStatus>("start_repo", { repositoryId });
+
+export const stopRepo = (repositoryId: number) =>
+  invoke<void>("stop_repo", { repositoryId });
+
+export const restartRepo = (repositoryId: number) =>
+  invoke<RepoStatus>("restart_repo", { repositoryId });
+
+export const setRepositoryEnabled = (repositoryId: number, enabled: boolean) =>
+  invoke<Repository>("set_repository_enabled", { repositoryId, enabled });
