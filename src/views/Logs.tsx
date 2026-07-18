@@ -15,6 +15,9 @@ export function Logs({
   onSelectRepo: (repositoryId: number) => void;
 }) {
   const [linesByRepo, setLinesByRepo] = useState<Record<number, RepoLogLine[]>>({});
+  const [search, setSearch] = useState("");
+  const [streamFilter, setStreamFilter] = useState<"all" | "stdout" | "stderr">("all");
+  const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -38,12 +41,21 @@ export function Logs({
   }, []);
 
   const selectedLines = selectedRepoId != null ? linesByRepo[selectedRepoId] ?? [] : [];
+  const query = search.trim().toLowerCase();
+  const filteredLines = selectedLines.filter(
+    (l) => (streamFilter === "all" || l.stream === streamFilter) && (query === "" || l.line.toLowerCase().includes(query)),
+  );
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [selectedLines.length]);
+  }, [filteredLines.length, autoScroll]);
+
+  function clearSelectedRepo() {
+    if (selectedRepoId == null) return;
+    setLinesByRepo((prev) => ({ ...prev, [selectedRepoId]: [] }));
+  }
 
   return (
     <div style={{ padding: "40px 48px", display: "flex", flexDirection: "column", height: "100vh", boxSizing: "border-box" }}>
@@ -69,6 +81,46 @@ export function Logs({
         </div>
       )}
 
+      {selectedRepoId != null && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <input
+            type="text"
+            className="mono"
+            placeholder="Filter logs…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{
+              fontSize: 12.5,
+              padding: "6px 10px",
+              minWidth: 220,
+              background: "var(--color-neutral-900)",
+              color: "var(--color-neutral-100)",
+              border: "1px solid var(--color-neutral-700)",
+              borderRadius: 6,
+            }}
+          />
+          <select
+            className="btn btn-secondary"
+            value={streamFilter}
+            onChange={(e) => setStreamFilter(e.target.value as "all" | "stdout" | "stderr")}
+          >
+            <option value="all">All streams</option>
+            <option value="stdout">stdout</option>
+            <option value="stderr">stderr</option>
+          </select>
+          <label className="text-muted" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+            <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
+            Auto-scroll
+          </label>
+          <button type="button" className="btn btn-secondary" onClick={clearSelectedRepo}>
+            Clear
+          </button>
+          <span className="text-muted" style={{ fontSize: 13, marginLeft: "auto" }}>
+            {selectedLines.length} lines · {filteredLines.length} shown
+          </span>
+        </div>
+      )}
+
       <div
         ref={scrollRef}
         style={{
@@ -83,12 +135,12 @@ export function Logs({
           <p className="mono" style={{ fontSize: 12.5, opacity: 0.5, margin: 0 }}>
             Per-repository live log streaming will live here (F11). Scaffold placeholder.
           </p>
-        ) : selectedLines.length === 0 ? (
+        ) : filteredLines.length === 0 ? (
           <p className="mono" style={{ fontSize: 12.5, opacity: 0.5, margin: 0 }}>
-            No output yet.
+            {selectedLines.length === 0 ? "No output yet." : "No lines match the current filter."}
           </p>
         ) : (
-          selectedLines.map((l, i) => (
+          filteredLines.map((l, i) => (
             <div
               key={i}
               className="mono"
