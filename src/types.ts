@@ -67,6 +67,23 @@ export interface Profile {
   repositoryIds: number[];
 }
 
+/** An entry in a launch record's `items` list (one per repository). */
+export interface LaunchItemRecord {
+  repositoryName: string;
+  status: string;
+  pid: number | null;
+}
+
+/** A recorded "Execute All" run. */
+export interface LaunchRecord {
+  id: number;
+  profileName: string | null;
+  startedAt: string; // ISO-8601
+  finishedAt: string | null;
+  status: string; // "running" | "completed" | "failed"
+  items: LaunchItemRecord[];
+}
+
 /** Mirrors the Rust `Settings` (serde camelCase). */
 export interface Settings {
   theme: "light" | "dark" | "system";

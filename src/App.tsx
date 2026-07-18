@@ -6,11 +6,12 @@ import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
+import { History } from "@/views/History";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
 import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, restartRepo } from "@/api";
 
-type View = "home" | "project" | "logs" | "settings";
+type View = "home" | "project" | "logs" | "settings" | "history";
 
 const NAV: { id: View; label: string; icon: ReactNode }[] = [
   {
@@ -32,6 +33,16 @@ const NAV: { id: View; label: string; icon: ReactNode }[] = [
     label: "Logs",
     icon: (
       <path d="M4 7V4a1 1 0 0 1 1-1h4 M4 17v3a1 1 0 0 0 1 1h4 M15 3h4a1 1 0 0 1 1 1v3 M20 17v3a1 1 0 0 1-1 1h-4 M8 12h8 M8 8h4 M8 16h6" />
+    ),
+  },
+  {
+    id: "history",
+    label: "History",
+    icon: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 3" />
+      </>
     ),
   },
   {
@@ -253,7 +264,7 @@ function App() {
 
         <nav style={{ paddingBottom: 8 }}>
           {NAV.map((n) => {
-            const disabled = n.id === "project" && !project;
+            const disabled = (n.id === "project" || n.id === "history") && !project;
             return (
               <button
                 key={n.id}
@@ -317,6 +328,7 @@ function App() {
         {view === "logs" && (
           <Logs repositories={repositories} selectedRepoId={selectedRepoId} onSelectRepo={setSelectedRepoId} />
         )}
+        {view === "history" && <History project={project} />}
         {view === "settings" && <Settings />}
       </main>
     </div>
