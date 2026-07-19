@@ -40,6 +40,7 @@ pub struct Repository {
     pub args: Option<String>,
     pub env_file: Option<String>,
     pub enabled: i64,
+    pub favorite: i64,
     pub removed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -172,7 +173,7 @@ pub async fn list_repositories(
     project_id: i64,
 ) -> Result<Vec<Repository>, sqlx::Error> {
     sqlx::query_as::<_, Repository>(
-        "SELECT * FROM repositories WHERE project_id = ? AND removed_at IS NULL ORDER BY name",
+        "SELECT * FROM repositories WHERE project_id = ? AND removed_at IS NULL ORDER BY favorite DESC, name",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -620,6 +621,25 @@ pub async fn remove_repository(pool: &SqlitePool, id: i64) -> Result<(), sqlx::E
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Toggle a repository's `favorite` flag (R7), returning the updated row.
+pub async fn set_repository_favorite(
+    pool: &SqlitePool,
+    id: i64,
+    favorite: bool,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE repositories SET favorite = ?, updated_at = ? WHERE id = ?")
+        .bind(if favorite { 1 } else { 0 })
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
 }
 
 /// Toggle a repository's `enabled` flag (F4), returning the updated row.

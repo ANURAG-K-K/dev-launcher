@@ -822,6 +822,18 @@ pub async fn remove_repository(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Star/unstar a repository (R7), returning the updated row.
+#[tauri::command]
+pub async fn set_repository_favorite(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    favorite: bool,
+) -> Result<persistence::Repository, AppError> {
+    persistence::set_repository_favorite(&state.pool, repository_id, favorite)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Enable/disable a repository (F4), returning the updated row.
 #[tauri::command]
 pub async fn set_repository_enabled(

@@ -71,6 +71,7 @@ pub fn run() {
             commands::update_settings,
             commands::update_repository_config,
             commands::set_repository_enabled,
+            commands::set_repository_favorite,
             commands::remove_repository,
             commands::open_repo_folder,
             commands::open_repo_terminal,
