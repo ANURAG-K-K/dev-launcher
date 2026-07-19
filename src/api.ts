@@ -17,6 +17,12 @@ export const scanRepositories = (projectId: number) =>
 export const gitStatusProject = (projectId: number) =>
   invoke<RepoGitStatus[]>("git_status_project", { projectId });
 
+export const gitFetch = (repositoryId: number) =>
+  invoke<string>("git_fetch", { repositoryId });
+
+export const gitPull = (repositoryId: number) =>
+  invoke<string>("git_pull", { repositoryId });
+
 export const listRecentProjects = () =>
   invoke<Project[]>("list_recent_projects");
 

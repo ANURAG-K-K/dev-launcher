@@ -265,6 +265,7 @@ function App() {
         <nav style={{ paddingBottom: 8 }}>
           {NAV.map((n) => {
             const disabled = (n.id === "project" || n.id === "history") && !project;
+            const label = n.id === "project" && project ? `Project [${project.name}]` : n.label;
             return (
               <button
                 key={n.id}
@@ -275,7 +276,7 @@ function App() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   {n.icon}
                 </svg>
-                {n.label}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
               </button>
             );
           })}

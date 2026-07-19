@@ -4,6 +4,8 @@ import {
   createProfile,
   deleteProfile,
   executeProject,
+  gitFetch,
+  gitPull,
   gitStatusProject,
   openRepoFolder,
   openRepoTerminal,
@@ -544,6 +546,33 @@ export function Project({
                           >
                             <path d="M21 12a9 9 0 1 1-3-6.7" />
                             <path d="M21 3v6h-6" />
+                          </IconButton>
+                        )}
+                        {gitByRepo[r.id] && (
+                          <IconButton
+                            title="Fetch"
+                            disabled={busyRow}
+                            onClick={() => runAction(r.id, () => gitFetch(r.id))}
+                          >
+                            <path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25" />
+                            <path d="M12 12v8" />
+                            <path d="M9 17l3 3 3-3" />
+                          </IconButton>
+                        )}
+                        {gitByRepo[r.id] && (
+                          <IconButton
+                            title="Pull"
+                            disabled={busyRow}
+                            onClick={() =>
+                              runAction(r.id, async () => {
+                                await gitPull(r.id);
+                                await loadGitStatus(project!.id);
+                              })
+                            }
+                          >
+                            <path d="M12 3v12" />
+                            <path d="M7 10l5 5 5-5" />
+                            <path d="M4 21h16" />
                           </IconButton>
                         )}
                         <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
