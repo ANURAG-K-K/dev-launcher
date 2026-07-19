@@ -21,6 +21,7 @@ export interface Repository {
   args: string | null;
   envFile: string | null;
   enabled: number; // 0 | 1
+  favorite: number; // 0 | 1
   removedAt: string | null;
   createdAt: string;
   updatedAt: string;

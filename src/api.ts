@@ -41,6 +41,9 @@ export const setRepositoryEnabled = (repositoryId: number, enabled: boolean) =>
 export const removeRepository = (repositoryId: number) =>
   invoke<Repository[]>("remove_repository", { repositoryId });
 
+export const setRepositoryFavorite = (repositoryId: number, favorite: boolean) =>
+  invoke<Repository>("set_repository_favorite", { repositoryId, favorite });
+
 export const updateRepositoryConfig = (input: {
   repositoryId: number;
   packageManager: string;

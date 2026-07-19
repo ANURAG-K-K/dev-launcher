@@ -17,6 +17,7 @@ import {
   stopRepo,
   updateProfile,
   removeRepository,
+  setRepositoryFavorite,
 } from "@/api";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
@@ -287,6 +288,20 @@ export function Project({
     return s === "running" || s === "starting";
   }).length;
 
+  // Favorites float to the top; the backend already orders this way, but sort locally so a star
+  // toggle re-orders immediately without a re-fetch.
+  const sortedRepos = [...repositories].sort(
+    (a, b) => b.favorite - a.favorite || a.name.localeCompare(b.name),
+  );
+
+  async function toggleFavorite(repo: Repository) {
+    try {
+      onRepoUpdated(await setRepositoryFavorite(repo.id, repo.favorite !== 1));
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, [repo.id]: String(err) }));
+    }
+  }
+
   return (
     <div style={{ padding: "40px 48px 64px" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
@@ -458,7 +473,7 @@ export function Project({
               </tr>
             </thead>
             <tbody>
-              {repositories.map((r) => {
+              {sortedRepos.map((r) => {
                 const repoStatus = statuses[r.id];
                 const status = repoStatus?.status ?? "stopped";
                 const launchable = r.command != null || r.detectedScript != null;
@@ -519,6 +534,16 @@ export function Project({
                     </td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                        <IconButton
+                          title={r.favorite === 1 ? "Unstar" : "Star"}
+                          color={r.favorite === 1 ? "var(--color-accent)" : undefined}
+                          onClick={() => toggleFavorite(r)}
+                        >
+                          <path
+                            fill={r.favorite === 1 ? "currentColor" : "none"}
+                            d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7L12 2z"
+                          />
+                        </IconButton>
                         {(status === "stopped" || status === "crashed") && (
                           <IconButton
                             title="Start"
