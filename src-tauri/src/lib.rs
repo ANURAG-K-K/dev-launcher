@@ -75,6 +75,8 @@ pub fn run() {
             commands::open_repo_folder,
             commands::open_repo_terminal,
             commands::git_status_project,
+            commands::git_fetch,
+            commands::git_pull,
             commands::list_dependencies,
             commands::set_repository_dependencies,
             commands::execute_project,

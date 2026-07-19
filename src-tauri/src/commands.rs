@@ -540,6 +540,44 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
     })
 }
 
+/// Fetch from the repository's remote (R5).
+#[tauri::command]
+pub async fn git_fetch(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
+    let repo = git_repo_path(&state, repository_id).await?;
+    run_git(&repo, &["fetch"])
+}
+
+/// Fast-forward pull the repository (R5). `--ff-only` avoids merge prompts/conflicts hanging.
+#[tauri::command]
+pub async fn git_pull(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
+    let repo = git_repo_path(&state, repository_id).await?;
+    run_git(&repo, &["pull", "--ff-only"])
+}
+
+async fn git_repo_path(state: &AppState, repository_id: i64) -> Result<String, AppError> {
+    persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .map(|r| r.path)
+        .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))
+}
+
+fn run_git(path: &str, args: &[&str]) -> Result<String, AppError> {
+    let mut full = vec!["-C", path];
+    full.extend_from_slice(args);
+    let out = std::process::Command::new("git")
+        .args(&full)
+        .output()
+        .map_err(|e| AppError::Launch(format!("git failed to run: {e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        Ok(format!("{stdout}{stderr}").trim().to_string())
+    } else {
+        Err(AppError::Launch(format!("git: {}", stderr.trim())))
+    }
+}
+
 // ── Settings (F14) ──────────────────────────────────────────────────────────
 
 /// Application settings (F14). Stored as a single JSON blob under the `app_settings` key.
