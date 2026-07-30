@@ -44,6 +44,9 @@ export const removeRepository = (repositoryId: number) =>
 export const setRepositoryFavorite = (repositoryId: number, favorite: boolean) =>
   invoke<Repository>("set_repository_favorite", { repositoryId, favorite });
 
+export const setRepositoryVisibleConsole = (repositoryId: number, visibleConsole: boolean) =>
+  invoke<Repository>("set_repository_visible_console", { repositoryId, visibleConsole });
+
 export const updateRepositoryConfig = (input: {
   repositoryId: number;
   packageManager: string;

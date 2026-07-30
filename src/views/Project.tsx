@@ -18,6 +18,7 @@ import {
   updateProfile,
   removeRepository,
   setRepositoryFavorite,
+  setRepositoryVisibleConsole,
 } from "@/api";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
@@ -302,6 +303,14 @@ export function Project({
     }
   }
 
+  async function toggleVisibleConsole(repo: Repository) {
+    try {
+      onRepoUpdated(await setRepositoryVisibleConsole(repo.id, repo.visibleConsole !== 1));
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, [repo.id]: String(err) }));
+    }
+  }
+
   return (
     <div style={{ padding: "40px 48px 64px" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
@@ -543,6 +552,18 @@ export function Project({
                             fill={r.favorite === 1 ? "currentColor" : "none"}
                             d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7L12 2z"
                           />
+                        </IconButton>
+                        <IconButton
+                          title={
+                            r.visibleConsole === 1
+                              ? "Visible console (on) — launches in a window you can type into; logs aren't captured"
+                              : "Visible console (off) — launches in the background with captured logs"
+                          }
+                          color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
+                          onClick={() => toggleVisibleConsole(r)}
+                        >
+                          <rect x="3" y="4" width="18" height="13" rx="1" />
+                          <path d="M8 21h8 M12 17v4" />
                         </IconButton>
                         {(status === "stopped" || status === "crashed") && (
                           <IconButton

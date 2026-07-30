@@ -417,8 +417,8 @@ pub async fn open_repo_folder(
     }
 }
 
-/// Open an external terminal at the repository's working directory (F12). Honors the
-/// `terminal_behavior` setting — the "integrated" terminal is deferred (R6).
+/// Open an external terminal at the repository's working directory (F12). An in-app
+/// "integrated" terminal is deferred past v1 (R6) — this always opens an external window.
 #[tauri::command]
 pub async fn open_repo_terminal(
     state: State<'_, AppState>,
@@ -428,19 +428,6 @@ pub async fn open_repo_terminal(
         .await
         .map_err(|e| AppError::Persist(e.to_string()))?
         .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
-
-    let settings: Settings = match persistence::get_setting(&state.pool, SETTINGS_KEY)
-        .await
-        .map_err(|e| AppError::Persist(e.to_string()))?
-    {
-        Some(json) => serde_json::from_str(&json).unwrap_or_default(),
-        None => Settings::default(),
-    };
-    if settings.terminal_behavior == "integrated" {
-        return Err(AppError::Launch(
-            "Integrated terminal isn't available in v1 — set Terminal behavior to External in Settings.".into(),
-        ));
-    }
 
     #[cfg(windows)]
     {
@@ -591,7 +578,6 @@ pub struct Settings {
     pub restore_last_project: bool,
     pub restore_last_selection: bool,
     pub auto_restart: bool,
-    pub terminal_behavior: String,
     pub log_retention: i64,
     pub notifications_enabled: bool,
 }
@@ -605,7 +591,6 @@ impl Default for Settings {
             restore_last_project: false,
             restore_last_selection: true,
             auto_restart: false,
-            terminal_behavior: "external".into(),
             log_retention: 1000,
             notifications_enabled: false,
         }
@@ -834,6 +819,19 @@ pub async fn set_repository_favorite(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Toggle whether a repository launches in a visible interactive console window instead of
+/// piped background logs, returning the updated row.
+#[tauri::command]
+pub async fn set_repository_visible_console(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    visible_console: bool,
+) -> Result<persistence::Repository, AppError> {
+    persistence::set_repository_visible_console(&state.pool, repository_id, visible_console)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Enable/disable a repository (F4), returning the updated row.
 #[tauri::command]
 pub async fn set_repository_enabled(
@@ -926,6 +924,8 @@ async fn launch_spec_for(
         .map(|f| load_env_file(&repo.path, f))
         .unwrap_or_default();
 
+    let visible = repo.visible_console != 0;
+
     #[cfg(windows)]
     {
         Ok(LaunchSpec {
@@ -933,6 +933,7 @@ async fn launch_spec_for(
             args: vec!["/C".to_string(), command_line],
             cwd: repo.path,
             env,
+            visible,
         })
     }
     #[cfg(not(windows))]
@@ -942,6 +943,7 @@ async fn launch_spec_for(
             args: vec!["-c".to_string(), command_line],
             cwd: repo.path,
             env,
+            visible,
         })
     }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE repositories ADD COLUMN visible_console INTEGER NOT NULL DEFAULT 0;

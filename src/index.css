@@ -42,6 +42,38 @@
   --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
 }
 
+:root {
+  color-scheme: light;
+  --color-nav-active-fg: var(--color-accent-700);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-nav-active-fg: var(--color-accent-300);
+  --color-bg: #1c1a1a;
+  --color-surface: #262323;
+  --color-text: #f3f2f2;
+  --color-divider: color-mix(in srgb, #f3f2f2 18%, transparent);
+
+  --color-neutral-100: #322f2f;
+  --color-neutral-200: #3a3737;
+  --color-neutral-300: #4a4646;
+  --color-neutral-400: #5c5858;
+  --color-neutral-500: #726d6d;
+  --color-neutral-600: #8d8888;
+  --color-neutral-700: #aaa5a5;
+  --color-neutral-800: #cdc9c9;
+  --color-neutral-900: #eae7e7;
+
+  --color-status-good-bg: oklch(28% 0.06 148);
+  --color-status-good-fg: oklch(85% 0.09 148);
+  --color-status-bad-bg: oklch(30% 0.06 25);
+  --color-status-bad-fg: oklch(85% 0.1 25);
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #000 40%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #000 45%, transparent);
+}
+
 body {
   margin: 0;
   background: var(--color-bg);
@@ -54,6 +86,16 @@ h1, h2, h3, h4 {
   font-weight: 800;
   letter-spacing: -0.015em;
   margin: 0;
+}
+
+select, input[type="text"], input[type="number"], textarea {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-family: var(--font-body);
+  font-size: 14px;
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -111,7 +153,7 @@ h1, h2, h3, h4 {
 .navitem svg { flex: none; }
 .navitem:hover:not(:disabled) { background: var(--color-neutral-200); }
 .navitem:disabled { opacity: 0.4; cursor: not-allowed; }
-.navitem-active { border-left-color: var(--color-accent); background: var(--color-neutral-200); color: var(--color-accent-700); }
+.navitem-active { border-left-color: var(--color-accent); background: var(--color-neutral-200); color: var(--color-nav-active-fg); }
 
 .sectiontitle { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.5; padding: 20px 16px 8px; }
 

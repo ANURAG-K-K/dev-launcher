@@ -22,6 +22,7 @@ export interface Repository {
   envFile: string | null;
   enabled: number; // 0 | 1
   favorite: number; // 0 | 1
+  visibleConsole: number; // 0 | 1
   removedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -104,7 +105,6 @@ export interface Settings {
   restoreLastProject: boolean;
   restoreLastSelection: boolean;
   autoRestart: boolean;
-  terminalBehavior: "integrated" | "external";
   logRetention: number;
   notificationsEnabled: boolean;
 }

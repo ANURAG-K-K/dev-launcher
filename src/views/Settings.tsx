@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getSettings, updateSettings } from "@/api";
+import { applyTheme } from "@/lib/theme";
 import type { Settings as SettingsT } from "@/types";
 
 /** Settings view (F14): theme, launch delay, auto-detect, restore, auto-restart, etc. */
@@ -19,6 +20,7 @@ export function Settings() {
     try {
       const result = await updateSettings(next);
       setSettings(result);
+      applyTheme(result.theme);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
@@ -69,7 +71,7 @@ export function Settings() {
         </select>
       </div>
       <p className="text-muted" style={{ margin: "6px 0 28px" }}>
-        Dark styling is applied app-wide via a data attribute on the root element.
+        Applies immediately. "System" follows your OS light/dark setting.
       </p>
 
       <div className="sectiontitle" style={{ padding: "0 0 8px" }}>Launch</div>
@@ -121,16 +123,6 @@ export function Settings() {
 
       <div className="sectiontitle" style={{ padding: "0 0 8px" }}>Other</div>
       <div className="hr" style={{ margin: "0 0 18px" }} />
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ display: "block", marginBottom: 6 }}>Terminal behavior</label>
-        <select
-          value={settings.terminalBehavior}
-          onChange={(e) => set("terminalBehavior", e.target.value as SettingsT["terminalBehavior"])}
-        >
-          <option value="integrated">Integrated</option>
-          <option value="external">External</option>
-        </select>
-      </div>
       <div style={{ marginBottom: 28 }}>
         <label style={{ display: "block", marginBottom: 6 }}>Log history (days)</label>
         <input

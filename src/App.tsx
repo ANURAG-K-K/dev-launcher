@@ -10,6 +10,7 @@ import { History } from "@/views/History";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
 import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, restartRepo } from "@/api";
+import { applyTheme } from "@/lib/theme";
 
 type View = "home" | "project" | "logs" | "settings" | "history";
 
@@ -198,7 +199,7 @@ function App() {
         return;
       }
       setSettings(settings);
-      document.documentElement.dataset.theme = settings.theme;
+      applyTheme(settings.theme);
 
       if (!settings.restoreLastProject) return;
       try {
@@ -253,7 +254,7 @@ function App() {
       >
         <div style={{ padding: "22px 16px 18px", borderBottom: "2px solid var(--color-divider)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 28, height: 28, background: "var(--color-accent-600)", flex: "none" }} />
+            <img src="/logo.svg" width={28} height={28} alt="" style={{ flex: "none" }} />
             <div style={{ fontFamily: "var(--font-heading)", fontSize: 15, fontWeight: 800, letterSpacing: "0.01em", lineHeight: 1.15 }}>
               Dev
               <br />

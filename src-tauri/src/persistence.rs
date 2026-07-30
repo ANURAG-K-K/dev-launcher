@@ -41,6 +41,9 @@ pub struct Repository {
     pub env_file: Option<String>,
     pub enabled: i64,
     pub favorite: i64,
+    /// When set, this repository launches in a visible interactive console window instead of
+    /// piped background logs (trade-off: stdin/keyboard access vs. captured Logs output).
+    pub visible_console: i64,
     pub removed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -632,6 +635,25 @@ pub async fn set_repository_favorite(
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("UPDATE repositories SET favorite = ?, updated_at = ? WHERE id = ?")
         .bind(if favorite { 1 } else { 0 })
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
+/// Toggle a repository's `visible_console` flag, returning the updated row.
+pub async fn set_repository_visible_console(
+    pool: &SqlitePool,
+    id: i64,
+    visible_console: bool,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE repositories SET visible_console = ?, updated_at = ? WHERE id = ?")
+        .bind(if visible_console { 1 } else { 0 })
         .bind(&now)
         .bind(id)
         .execute(pool)

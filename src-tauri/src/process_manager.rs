@@ -54,6 +54,11 @@ pub struct LaunchSpec {
     pub cwd: String,
     /// Extra environment variables (from the repo's env file, F5).
     pub env: Vec<(String, String)>,
+    /// When true, spawn in a real visible console window with inherited stdio (interactive
+    /// keyboard access) instead of a hidden window with piped output. Trade-off: no `repo_log`
+    /// events are emitted for a visible-console run — Windows can't both pipe stdio for capture
+    /// and hand it to a console window at the same time.
+    pub visible: bool,
 }
 
 struct Tracked {
@@ -179,13 +184,19 @@ impl ProcessManager {
         cmd.args(&spec.args)
             .current_dir(&spec.cwd)
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .kill_on_drop(false);
-        #[cfg(windows)]
-        {
-            // CREATE_NO_WINDOW: don't flash a console; output is captured via pipes.
-            cmd.creation_flags(0x0800_0000);
+        if spec.visible {
+            // Inherited stdio goes to the new console window, giving real keyboard access — but
+            // that means it can't also be piped, so no repo_log events for this run (see LaunchSpec).
+            cmd.stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+            #[cfg(windows)]
+            cmd.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+        } else {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: output is captured via pipes.
         }
 
         let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
@@ -194,11 +205,21 @@ impl ProcessManager {
         #[cfg(windows)]
         let job = unsafe { assign_to_job(&child) }.unwrap_or(0);
 
-        if let Some(out) = child.stdout.take() {
-            self.stream_output(repo_id, out, "stdout");
-        }
-        if let Some(err) = child.stderr.take() {
-            self.stream_output(repo_id, err, "stderr");
+        if spec.visible {
+            let payload = LogLine {
+                repository_id: repo_id,
+                stream: "stdout",
+                line: "— running in a visible console window; output is not captured here —".into(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            let _ = self.app.emit("repo_log", &payload);
+        } else {
+            if let Some(out) = child.stdout.take() {
+                self.stream_output(repo_id, out, "stdout");
+            }
+            if let Some(err) = child.stderr.take() {
+                self.stream_output(repo_id, err, "stderr");
+            }
         }
 
         {
