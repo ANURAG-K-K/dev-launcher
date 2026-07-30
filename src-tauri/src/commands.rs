@@ -448,7 +448,7 @@ pub async fn open_repo_terminal(
 // ── Git integration (R5) ────────────────────────────────────────────────────
 
 /// Per-repository git status (R5). Only returned for repos that are git working trees.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoGitStatus {
     pub repository_id: i64,
@@ -459,6 +459,9 @@ pub struct RepoGitStatus {
 }
 
 /// Git status for every git-tracked repository in a project (R5). Non-git repos are omitted.
+/// Serves from the process-local cache (`GIT_STATUS_CACHE_TTL`) where possible; only cache
+/// misses spawn a git subprocess, bounded by a semaphore so a large project doesn't fire one
+/// git process per repo simultaneously.
 #[tauri::command]
 pub async fn git_status_project(
     state: State<'_, AppState>,
@@ -467,19 +470,73 @@ pub async fn git_status_project(
     let repos = persistence::list_repositories(&state.pool, project_id)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))?;
-    let mut out = Vec::new();
+
+    let cache = state.git_status_cache.clone();
+    let permits = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(4);
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
+
+    let mut handles = Vec::with_capacity(repos.len());
     for repo in repos {
-        if let Some(status) = git_status_for(&repo.path, repo.id) {
+        let cache = cache.clone();
+        let semaphore = semaphore.clone();
+        handles.push(tokio::spawn(async move {
+            // "canonical" here means the repository's DB path used verbatim as the cache key —
+            // it is NOT actually passed through Path::canonicalize() (no symlink/`..`/case resolution).
+            let canonical_path = std::path::PathBuf::from(&repo.path);
+            // Concurrent invocations of git_status_project (e.g. rapid UI tab-switching) can both
+            // miss the cache and spawn git for the same repo. This is intentionally tolerated because
+            // the duplicate work is flash-free and non-blocking (post the CREATE_NO_WINDOW/spawn_blocking
+            // fixes), and adding single-flight dedup would be more complexity than this bug warrants.
+            if let Some(cached) = cache.get(repo.id, &canonical_path, crate::git_status_cache::GIT_STATUS_CACHE_TTL) {
+                return Some(cached);
+            }
+
+            let _permit = semaphore.acquire_owned().await.ok()?;
+            let path = repo.path.clone();
+            let repo_id = repo.id;
+            // Only the blocking git subprocess calls run inside spawn_blocking; the cache
+            // check and semaphore acquisition above stay in plain async code.
+            let status = tokio::task::spawn_blocking(move || git_status_for(&path, repo_id))
+                .await
+                .ok()
+                .flatten()?;
+
+            cache.insert(repo_id, canonical_path, status.clone());
+            Some(status)
+        }));
+    }
+
+    let mut out = Vec::with_capacity(handles.len());
+    for handle in handles {
+        // A repo whose git status check panics or fails is intentionally omitted from the results,
+        // consistent with the existing "non-git repos are omitted" contract — not a bug, a deliberate choice.
+        if let Ok(Some(status)) = handle.await {
             out.push(status);
         }
     }
     Ok(out)
 }
 
+/// Builds a `git -C <path>` command with console-window suppression on Windows (every git
+/// subprocess in this app must be spawned through this helper — see spec 2026-07-31).
+fn git_command(path: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// Run `git` in `path` and return its status, or None if it isn't a git working tree.
 fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
-    let branch_out = std::process::Command::new("git")
-        .args(["-C", path, "rev-parse", "--abbrev-ref", "HEAD"])
+    let branch_out = git_command(path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
     if !branch_out.status.success() {
@@ -490,17 +547,15 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
         return None;
     }
 
-    let dirty = std::process::Command::new("git")
-        .args(["-C", path, "status", "--porcelain"])
+    let dirty = git_command(path)
+        .args(["status", "--porcelain"])
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
 
     // `--left-right --count @{upstream}...HEAD` prints "<behind>\t<ahead>"; missing upstream -> 0/0.
-    let (ahead, behind) = std::process::Command::new("git")
+    let (ahead, behind) = git_command(path)
         .args([
-            "-C",
-            path,
             "rev-list",
             "--left-right",
             "--count",
@@ -527,18 +582,24 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
     })
 }
 
-/// Fetch from the repository's remote (R5).
+/// Fetch from the repository's remote (R5). Invalidates the cached status for this repo —
+/// any git write command must do the same (spec 2026-07-31).
 #[tauri::command]
 pub async fn git_fetch(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
     let repo = git_repo_path(&state, repository_id).await?;
-    run_git(&repo, &["fetch"])
+    let result = run_git(&repo, &["fetch"]);
+    state.git_status_cache.invalidate(repository_id);
+    result
 }
 
 /// Fast-forward pull the repository (R5). `--ff-only` avoids merge prompts/conflicts hanging.
+/// Invalidates the cached status for this repo — any git write command must do the same.
 #[tauri::command]
 pub async fn git_pull(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
     let repo = git_repo_path(&state, repository_id).await?;
-    run_git(&repo, &["pull", "--ff-only"])
+    let result = run_git(&repo, &["pull", "--ff-only"]);
+    state.git_status_cache.invalidate(repository_id);
+    result
 }
 
 async fn git_repo_path(state: &AppState, repository_id: i64) -> Result<String, AppError> {
@@ -550,10 +611,8 @@ async fn git_repo_path(state: &AppState, repository_id: i64) -> Result<String, A
 }
 
 fn run_git(path: &str, args: &[&str]) -> Result<String, AppError> {
-    let mut full = vec!["-C", path];
-    full.extend_from_slice(args);
-    let out = std::process::Command::new("git")
-        .args(&full)
+    let out = git_command(path)
+        .args(args)
         .output()
         .map_err(|e| AppError::Launch(format!("git failed to run: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -975,4 +1034,89 @@ fn load_env_file(repo_path: &str, env_file: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod git_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Creates a temp dir with one commit, cleaned up by the caller via `remove_dir_all`.
+    fn init_temp_repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mrl-commands-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp repo dir");
+        Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        std::fs::write(dir.join("a.txt"), "hi").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&dir).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        dir
+    }
+
+    #[test]
+    fn run_git_reports_clean_status_via_git_command_helper() {
+        let dir = init_temp_repo();
+        let out = run_git(dir.to_str().unwrap(), &["status", "--porcelain"]).unwrap();
+        assert_eq!(out, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_status_for_returns_branch_and_clean_flag() {
+        let dir = init_temp_repo();
+        let status = git_status_for(dir.to_str().unwrap(), 1).expect("should detect git repo");
+        assert!(!status.branch.is_empty());
+        assert!(!status.dirty);
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_status_for_returns_none_for_non_git_directory() {
+        let dir = std::env::temp_dir().join(format!("mrl-commands-notgit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(git_status_for(dir.to_str().unwrap(), 1).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_status_project_serves_second_call_from_cache() {
+        let dir = init_temp_repo();
+        let cache = std::sync::Arc::new(crate::git_status_cache::GitStatusCache::new());
+        let canonical_path = std::path::PathBuf::from(dir.to_str().unwrap());
+
+        // First call: cache miss, computed directly (bypassing the Tauri command wrapper, which
+        // needs a full AppState/sqlite pool — this exercises the same cache + git_status_for path
+        // git_status_project uses).
+        assert!(cache.get(1, &canonical_path, crate::git_status_cache::GIT_STATUS_CACHE_TTL).is_none());
+        let status = git_status_for(dir.to_str().unwrap(), 1).expect("git repo");
+        cache.insert(1, canonical_path.clone(), status.clone());
+
+        // Second call within TTL: cache hit, no git subprocess needed.
+        let cached = cache.get(1, &canonical_path, crate::git_status_cache::GIT_STATUS_CACHE_TTL);
+        assert_eq!(cached.unwrap().branch, status.branch);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

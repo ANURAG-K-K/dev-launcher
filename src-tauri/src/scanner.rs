@@ -109,12 +109,15 @@ pub fn scan_project_root(root: &Path) -> Result<Vec<DiscoveredRepo>, ScanError> 
         if !path.is_dir() {
             continue;
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue; // skip .git, .superpowers, etc. before any metadata/package.json check
+        }
         let pkg_json = path.join("package.json");
         if !pkg_json.is_file() {
             continue;
         }
 
-        let name = entry.file_name().to_string_lossy().into_owned();
         let package_manager = detect_package_manager(&path);
         let detected_script = detect_script(&pkg_json);
         let command = detected_script
@@ -298,5 +301,18 @@ mod tests {
         let repos = scan_project_root(tmp.path()).unwrap();
         let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn dot_prefixed_directory_is_skipped_even_if_it_somehow_contains_package_json() {
+        let tmp = TempDir::new();
+        let dotdir = tmp.child_dir(".git");
+        write(&dotdir, "package.json", "{}"); // pathological case: prove it's skipped explicitly
+        let repo = tmp.child_dir("real-repo");
+        write(&repo, "package.json", "{}");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["real-repo"]);
     }
 }

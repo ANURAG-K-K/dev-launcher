@@ -12,6 +12,7 @@
 
 mod commands;
 mod error;
+mod git_status_cache;
 mod launcher;
 mod notifier;
 mod persistence;
@@ -27,6 +28,7 @@ use process_manager::ProcessManager;
 pub struct AppState {
     pub pool: SqlitePool,
     pub process_manager: ProcessManager,
+    pub git_status_cache: std::sync::Arc<git_status_cache::GitStatusCache>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -60,6 +62,7 @@ pub fn run() {
             app.manage(AppState {
                 pool,
                 process_manager,
+                git_status_cache: std::sync::Arc::new(git_status_cache::GitStatusCache::new()),
             });
             Ok(())
         })
