@@ -418,7 +418,8 @@ pub async fn open_repo_folder(
 }
 
 /// Open an external terminal at the repository's working directory (F12). An in-app
-/// "integrated" terminal is deferred past v1 (R6) — this always opens an external window.
+/// "integrated" terminal is deferred past v1 (R6) — this always opens an external window, in
+/// the shell chosen by `Settings.terminal_shell`.
 #[tauri::command]
 pub async fn open_repo_terminal(
     state: State<'_, AppState>,
@@ -431,8 +432,16 @@ pub async fn open_repo_terminal(
 
     #[cfg(windows)]
     {
+        let settings = load_settings(&state.pool).await?;
+        let shell = shell_program(&settings.terminal_shell);
+        let mut args = vec!["/C", "start", "", shell];
+        if shell == "powershell" {
+            // Same execution-policy bypass as windows_launch_program_args — otherwise the
+            // first npm/pnpm/yarn/bun command typed in this window fails to load its .ps1 shim.
+            args.extend(["-ExecutionPolicy", "Bypass"]);
+        }
         std::process::Command::new("cmd")
-            .args(["/C", "start", "", "cmd"])
+            .args(&args)
             .current_dir(&repo.path)
             .spawn()
             .map_err(|e| AppError::Launch(format!("failed to open terminal: {e}")))?;
@@ -639,6 +648,8 @@ pub struct Settings {
     pub auto_restart: bool,
     pub log_retention: i64,
     pub notifications_enabled: bool,
+    pub terminal_shell: String,
+    pub visible_actions: Vec<String>,
 }
 
 impl Default for Settings {
@@ -652,21 +663,70 @@ impl Default for Settings {
             auto_restart: false,
             log_retention: 1000,
             notifications_enabled: false,
+            terminal_shell: "cmd".into(),
+            visible_actions: vec![
+                "logs".into(),
+                "openFolder".into(),
+                "openTerminal".into(),
+                "edit".into(),
+                "remove".into(),
+            ],
         }
+    }
+}
+
+/// Maps a `Settings.terminal_shell` value to the program name used to open an interactive
+/// shell window. Unknown/empty values fall back to `"cmd"` (the default), never panicking.
+fn shell_program(terminal_shell: &str) -> &'static str {
+    if terminal_shell == "powershell" {
+        "powershell"
+    } else {
+        "cmd"
+    }
+}
+
+/// Builds the (program, args) pair used to run `command_line` in the chosen shell on Windows.
+/// `"cmd"` (default) preserves the exact prior behavior; `"powershell"` runs the same command
+/// line through `powershell -Command` instead.
+#[cfg(windows)]
+fn windows_launch_program_args(terminal_shell: &str, command_line: &str) -> (String, Vec<String>) {
+    if terminal_shell == "powershell" {
+        (
+            "powershell".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                // Windows' default execution policy blocks running the .ps1 shims npm/pnpm/
+                // yarn/bun install (npm.ps1 etc.) — without this, every launch fails with
+                // "cannot be loaded because running scripts is disabled on this system".
+                // Scoped to this one process, not a system-wide policy change.
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                command_line.to_string(),
+            ],
+        )
+    } else {
+        ("cmd".to_string(), vec!["/C".to_string(), command_line.to_string()])
     }
 }
 
 const SETTINGS_KEY: &str = "app_settings";
 
-#[tauri::command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
-    match persistence::get_setting(&state.pool, SETTINGS_KEY)
+/// Loads `Settings` from the `app_settings` blob, falling back to `Settings::default()` if
+/// missing or unparseable — the one place every settings read goes through.
+async fn load_settings(pool: &sqlx::SqlitePool) -> Result<Settings, AppError> {
+    match persistence::get_setting(pool, SETTINGS_KEY)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))?
     {
         Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
         None => Ok(Settings::default()),
     }
+}
+
+#[tauri::command]
+pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
+    load_settings(&state.pool).await
 }
 
 #[tauri::command]
@@ -987,9 +1047,11 @@ async fn launch_spec_for(
 
     #[cfg(windows)]
     {
+        let settings = load_settings(&state.pool).await?;
+        let (program, args) = windows_launch_program_args(&settings.terminal_shell, &command_line);
         Ok(LaunchSpec {
-            program: "cmd".to_string(),
-            args: vec!["/C".to_string(), command_line],
+            program,
+            args,
             cwd: repo.path,
             env,
             visible,
@@ -1118,5 +1180,69 @@ mod git_tests {
         assert_eq!(cached.unwrap().branch, status.branch);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn shell_program_maps_powershell_and_defaults_to_cmd() {
+        assert_eq!(shell_program("powershell"), "powershell");
+        assert_eq!(shell_program("cmd"), "cmd");
+        assert_eq!(shell_program(""), "cmd");
+        assert_eq!(shell_program("bash"), "cmd"); // unknown value falls back safely
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launch_program_args_switches_on_terminal_shell() {
+        let (program, args) = windows_launch_program_args("cmd", "npm run dev");
+        assert_eq!(program, "cmd");
+        assert_eq!(args, vec!["/C".to_string(), "npm run dev".to_string()]);
+
+        let (program, args) = windows_launch_program_args("powershell", "npm run dev");
+        assert_eq!(program, "powershell");
+        assert_eq!(
+            args,
+            vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                "npm run dev".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn settings_default_terminal_shell_is_cmd() {
+        assert_eq!(Settings::default().terminal_shell, "cmd");
+    }
+
+    #[test]
+    fn settings_default_visible_actions_is_curated_set() {
+        let defaults = Settings::default();
+        assert_eq!(
+            defaults.visible_actions,
+            vec!["logs", "openFolder", "openTerminal", "edit", "remove"]
+        );
+    }
+
+    #[test]
+    fn old_settings_json_without_visible_actions_falls_back_to_default() {
+        // Simulates a stored blob from before this field existed.
+        let old_json = r#"{"theme":"dark","launchDelayMs":500,"autoDetect":true,
+            "restoreLastProject":true,"restoreLastSelection":true,"autoRestart":false,
+            "logRetention":1000,"notificationsEnabled":true,"terminalShell":"cmd"}"#;
+        let parsed: Settings = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            parsed.visible_actions,
+            vec!["logs", "openFolder", "openTerminal", "edit", "remove"]
+        );
+        // Fields that WERE present in the old blob are preserved, not overwritten by defaults.
+        assert_eq!(parsed.theme, "dark");
+        assert_eq!(parsed.launch_delay_ms, 500);
     }
 }

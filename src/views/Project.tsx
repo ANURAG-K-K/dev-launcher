@@ -19,6 +19,7 @@ import {
   removeRepository,
   setRepositoryFavorite,
   setRepositoryVisibleConsole,
+  getSettings,
 } from "@/api";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
@@ -118,6 +119,24 @@ export function Project({
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
+
+  // Fetched fresh on mount (not passed down from App.tsx) so a change made in Settings takes
+  // effect the next time this view is opened, without needing an app restart.
+  const [visibleActions, setVisibleActions] = useState<string[]>([
+    "logs",
+    "openFolder",
+    "openTerminal",
+    "edit",
+    "remove",
+  ]);
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => setVisibleActions(s.visibleActions))
+      .catch(() => {
+        // Keep the curated-default fallback already in state; nothing to surface here.
+      });
+  }, []);
 
   // The execute summary is a one-shot outcome, not live state — auto-dismiss it so it can't go
   // stale as repos are started/stopped individually (the live "running" count below is the truth).
@@ -543,28 +562,32 @@ export function Project({
                     </td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                        <IconButton
-                          title={r.favorite === 1 ? "Unstar" : "Star"}
-                          color={r.favorite === 1 ? "var(--color-accent)" : undefined}
-                          onClick={() => toggleFavorite(r)}
-                        >
-                          <path
-                            fill={r.favorite === 1 ? "currentColor" : "none"}
-                            d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7L12 2z"
-                          />
-                        </IconButton>
-                        <IconButton
-                          title={
-                            r.visibleConsole === 1
-                              ? "Visible console (on) — launches in a window you can type into; logs aren't captured"
-                              : "Visible console (off) — launches in the background with captured logs"
-                          }
-                          color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
-                          onClick={() => toggleVisibleConsole(r)}
-                        >
-                          <rect x="3" y="4" width="18" height="13" rx="1" />
-                          <path d="M8 21h8 M12 17v4" />
-                        </IconButton>
+                        {visibleActions.includes("favorite") && (
+                          <IconButton
+                            title={r.favorite === 1 ? "Unstar" : "Star"}
+                            color={r.favorite === 1 ? "var(--color-accent)" : undefined}
+                            onClick={() => toggleFavorite(r)}
+                          >
+                            <path
+                              fill={r.favorite === 1 ? "currentColor" : "none"}
+                              d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7L12 2z"
+                            />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("visibleConsole") && (
+                          <IconButton
+                            title={
+                              r.visibleConsole === 1
+                                ? "Visible console (on) — launches in a window you can type into; logs aren't captured"
+                                : "Visible console (off) — launches in the background with captured logs"
+                            }
+                            color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
+                            onClick={() => toggleVisibleConsole(r)}
+                          >
+                            <rect x="3" y="4" width="18" height="13" rx="1" />
+                            <path d="M8 21h8 M12 17v4" />
+                          </IconButton>
+                        )}
                         {(status === "stopped" || status === "crashed") && (
                           <IconButton
                             title="Start"
@@ -594,7 +617,7 @@ export function Project({
                             <path d="M21 3v6h-6" />
                           </IconButton>
                         )}
-                        {gitByRepo[r.id] && (
+                        {gitByRepo[r.id] && visibleActions.includes("fetch") && (
                           <IconButton
                             title="Fetch"
                             disabled={busyRow}
@@ -605,7 +628,7 @@ export function Project({
                             <path d="M9 17l3 3 3-3" />
                           </IconButton>
                         )}
-                        {gitByRepo[r.id] && (
+                        {gitByRepo[r.id] && visibleActions.includes("pull") && (
                           <IconButton
                             title="Pull"
                             disabled={busyRow}
@@ -621,39 +644,49 @@ export function Project({
                             <path d="M4 21h16" />
                           </IconButton>
                         )}
-                        <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
-                          <path d="M4 6h16M4 12h16M4 18h10" />
-                        </IconButton>
-                        <IconButton
-                          title="Open Folder"
-                          disabled={busyRow}
-                          onClick={() => runAction(r.id, () => openRepoFolder(r.id))}
-                        >
-                          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-                        </IconButton>
-                        <IconButton
-                          title="Open Terminal"
-                          disabled={busyRow}
-                          onClick={() => runAction(r.id, () => openRepoTerminal(r.id))}
-                        >
-                          <rect x="3" y="4" width="18" height="16" rx="2" />
-                          <polyline points="7 9 10 12 7 15" />
-                          <line x1="12" y1="15" x2="16" y2="15" />
-                        </IconButton>
-                        <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
-                          <path d="M12 20h9" />
-                          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                        </IconButton>
-                        <IconButton
-                          title="Remove"
-                          color="var(--color-status-bad-fg)"
-                          disabled={busyRow}
-                          onClick={() => removeRepo(r)}
-                        >
-                          <path d="M3 6h18" />
-                          <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                        </IconButton>
+                        {visibleActions.includes("logs") && (
+                          <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
+                            <path d="M4 6h16M4 12h16M4 18h10" />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("openFolder") && (
+                          <IconButton
+                            title="Open Folder"
+                            disabled={busyRow}
+                            onClick={() => runAction(r.id, () => openRepoFolder(r.id))}
+                          >
+                            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("openTerminal") && (
+                          <IconButton
+                            title="Open Terminal"
+                            disabled={busyRow}
+                            onClick={() => runAction(r.id, () => openRepoTerminal(r.id))}
+                          >
+                            <rect x="3" y="4" width="18" height="16" rx="2" />
+                            <polyline points="7 9 10 12 7 15" />
+                            <line x1="12" y1="15" x2="16" y2="15" />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("edit") && (
+                          <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("remove") && (
+                          <IconButton
+                            title="Remove"
+                            color="var(--color-status-bad-fg)"
+                            disabled={busyRow}
+                            onClick={() => removeRepo(r)}
+                          >
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                          </IconButton>
+                        )}
                       </div>
                       {error && (
                         <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 4 }}>

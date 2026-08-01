@@ -107,4 +107,6 @@ export interface Settings {
   autoRestart: boolean;
   logRetention: number;
   notificationsEnabled: boolean;
+  terminalShell: "cmd" | "powershell";
+  visibleActions: string[];
 }

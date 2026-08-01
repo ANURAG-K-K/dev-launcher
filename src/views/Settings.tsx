@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getSettings, updateSettings } from "@/api";
 import { applyTheme } from "@/lib/theme";
+import { ACTION_KEYS } from "@/lib/actionKeys";
 import type { Settings as SettingsT } from "@/types";
 
 /** Settings view (F14): theme, launch delay, auto-detect, restore, auto-restart, etc. */
@@ -132,6 +133,21 @@ export function Settings() {
           onChange={(e) => set("logRetention", Math.max(0, Number(e.target.value)))}
         />
       </div>
+      <div style={{ marginBottom: 6 }}>
+        <label style={{ display: "block", marginBottom: 6 }}>Terminal shell</label>
+        <select
+          value={settings.terminalShell}
+          onChange={(e) => set("terminalShell", e.target.value as SettingsT["terminalShell"])}
+        >
+          <option value="cmd">cmd</option>
+          <option value="powershell">PowerShell</option>
+        </select>
+        <p className="text-muted" style={{ margin: "6px 0 28px" }}>
+          Used for "Open Terminal" and for running every repository's dev-server command. Command
+          overrides must use PowerShell syntax when PowerShell is selected (e.g. ";" instead of
+          "&&", "$env:VAR" instead of "%VAR%").
+        </p>
+      </div>
 
       <div className="sectiontitle" style={{ padding: "0 0 8px" }}>Notifications</div>
       <div className="hr" style={{ margin: "0 0 18px" }} />
@@ -146,6 +162,29 @@ export function Settings() {
       <p className="text-muted" style={{ margin: "6px 0 0" }}>
         Sends a desktop notification when a repository crashes.
       </p>
+
+      <div className="sectiontitle" style={{ padding: "24px 0 8px" }}>Action buttons</div>
+      <div className="hr" style={{ margin: "0 0 18px" }} />
+      <p className="text-muted" style={{ margin: "0 0 14px" }}>
+        Choose which action buttons appear on each repository row.
+      </p>
+      {ACTION_KEYS.map(({ key, label }) => (
+        <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            checked={settings.visibleActions.includes(key)}
+            onChange={(e) =>
+              set(
+                "visibleActions",
+                e.target.checked
+                  ? [...settings.visibleActions, key]
+                  : settings.visibleActions.filter((k) => k !== key)
+              )
+            }
+          />
+          {label}
+        </label>
+      ))}
     </div>
   );
 }
