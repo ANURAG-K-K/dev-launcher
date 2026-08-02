@@ -1,16 +1,64 @@
-import { useEffect, useState } from "react";
-import { listRecentProjects, openProject, pickDirectory } from "@/api";
+import { useEffect, useRef, useState } from "react";
+import { listRecentProjects, openProject, pickDirectory, renameProject } from "@/api";
 import type { Project, ProjectWithRepos } from "@/types";
+import { IconButton } from "@/components/IconButton";
 
 /** Home view (F1): recent projects + Open Project Folder. */
-export function Home({ onOpened }: { onOpened: (result: ProjectWithRepos) => void }) {
+export function Home({
+  onOpened,
+  onRenamed,
+}: {
+  onOpened: (result: ProjectWithRepos) => void;
+  onRenamed?: (project: Project) => void;
+}) {
   const [recent, setRecent] = useState<Project[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const renameCancelledRef = useRef(false);
 
   useEffect(() => {
     listRecentProjects().then(setRecent).catch((e) => setError(String(e)));
   }, []);
+
+  function startRename(p: Project) {
+    // Cleared unconditionally on every edit-start (not just consumed-and-reset on the blur
+    // path in saveRename): correctness can't depend on the browser firing `blur` when a
+    // focused element unmounts — Chromium/WebView2 (this app's actual runtime) doesn't.
+    renameCancelledRef.current = false;
+    setRenamingId(p.id);
+    setRenameValue(p.name);
+    setRenameError("");
+  }
+
+  function cancelRename() {
+    renameCancelledRef.current = true;
+    setRenamingId(null);
+    setRenameError("");
+  }
+
+  async function saveRename(id: number) {
+    if (renameCancelledRef.current) {
+      renameCancelledRef.current = false;
+      return;
+    }
+    const trimmed = renameValue.trim();
+    if (!trimmed) {
+      setRenameError("Name cannot be empty");
+      return;
+    }
+    try {
+      const updated = await renameProject(id, trimmed);
+      setRecent((prev) => prev.map((p) => (p.id === id ? updated : p)));
+      onRenamed?.(updated);
+      setRenamingId(null);
+      setRenameError("");
+    } catch (err) {
+      setRenameError(String(err));
+    }
+  }
 
   async function open(rootPath: string) {
     setBusy(true);
@@ -67,7 +115,42 @@ export function Home({ onOpened }: { onOpened: (result: ProjectWithRepos) => voi
           <tbody>
             {recent.map((p) => (
               <tr key={p.id}>
-                <td style={{ fontWeight: 600 }}>{p.name}</td>
+                <td style={{ fontWeight: 600 }}>
+                  {renamingId === p.id ? (
+                    <div>
+                      <input
+                        autoFocus
+                        style={{ width: "100%", padding: "4px 6px", fontSize: 13, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-divider)", background: "var(--color-bg)" }}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void saveRename(p.id);
+                          if (e.key === "Escape") cancelRename();
+                        }}
+                        onBlur={() => {
+                          // Blur with an empty name means the user moved on, not that they
+                          // rejected a submission — cancel silently instead of showing an
+                          // error the user can no longer see (focus has already left).
+                          if (!renameValue.trim()) cancelRename();
+                          else void saveRename(p.id);
+                        }}
+                      />
+                      {renameError && (
+                        <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 2 }}>
+                          {renameError}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      {p.name}
+                      <IconButton title="Rename" onClick={() => startRename(p)}>
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                      </IconButton>
+                    </span>
+                  )}
+                </td>
                 <td className="mono text-muted" style={{ fontSize: 12 }}>{p.rootPath}</td>
                 <td style={{ textAlign: "right" }}>
                   <button type="button" className="btn btn-secondary" onClick={() => open(p.rootPath)} disabled={busy}>

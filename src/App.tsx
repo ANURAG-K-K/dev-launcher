@@ -9,8 +9,9 @@ import { Settings } from "@/views/Settings";
 import { History } from "@/views/History";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
-import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, restartRepo } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, renameProject, restartRepo } from "@/api";
 import { applyTheme } from "@/lib/theme";
+import { IconButton } from "@/components/IconButton";
 
 type View = "home" | "project" | "logs" | "settings" | "history";
 
@@ -69,6 +70,10 @@ function App() {
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
   const [recentProjects, setRecentProjects] = useState<ProjectT[]>([]);
   const [settings, setSettings] = useState<SettingsT | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const renameCancelledRef = useRef(false);
   const crashCountsRef = useRef<Record<number, number>>({});
 
   // Live mirror of repositories for use inside the []-deps event listener (avoids a stale closure).
@@ -170,6 +175,43 @@ function App() {
       applyResult(await openProject(rootPath));
     } catch {
       /* folder gone / unreadable — ignore */
+    }
+  }
+
+  function startRename(p: ProjectT) {
+    // Cleared unconditionally on every edit-start (not just consumed-and-reset on the blur
+    // path in saveRename): correctness can't depend on the browser firing `blur` when a
+    // focused element unmounts — Chromium/WebView2 (this app's actual runtime) doesn't.
+    renameCancelledRef.current = false;
+    setRenamingProjectId(p.id);
+    setRenameValue(p.name);
+    setRenameError("");
+  }
+
+  function cancelRename() {
+    renameCancelledRef.current = true;
+    setRenamingProjectId(null);
+    setRenameError("");
+  }
+
+  async function saveRename(id: number) {
+    if (renameCancelledRef.current) {
+      renameCancelledRef.current = false;
+      return;
+    }
+    const trimmed = renameValue.trim();
+    if (!trimmed) {
+      setRenameError("Name cannot be empty");
+      return;
+    }
+    try {
+      const updated = await renameProject(id, trimmed);
+      setRecentProjects((prev) => prev.map((p) => (p.id === id ? updated : p)));
+      if (project?.id === id) setProject(updated);
+      setRenamingProjectId(null);
+      setRenameError("");
+    } catch (err) {
+      setRenameError(String(err));
     }
   }
 
@@ -288,17 +330,49 @@ function App() {
           {recentProjects.length === 0 ? (
             <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No recent projects</div>
           ) : (
-            recentProjects.map((p) => (
-              <button
-                key={p.id}
-                className={cn("navitem", project?.id === p.id && "navitem-active")}
-                title={p.rootPath}
-                onClick={() => openRecent(p.rootPath)}
-                style={{ display: "block", width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              >
-                {p.name}
-              </button>
-            ))
+            recentProjects.map((p) =>
+              renamingProjectId === p.id ? (
+                <div key={p.id} style={{ padding: "4px 16px" }}>
+                  <input
+                    autoFocus
+                    style={{ width: "100%", padding: "4px 6px", fontSize: 13, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-divider)", background: "var(--color-bg)" }}
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void saveRename(p.id);
+                      if (e.key === "Escape") cancelRename();
+                    }}
+                    onBlur={() => {
+                      // Blur with an empty name means the user moved on, not that they
+                      // rejected a submission — cancel silently instead of showing an
+                      // error the user can no longer see (focus has already left).
+                      if (!renameValue.trim()) cancelRename();
+                      else void saveRename(p.id);
+                    }}
+                  />
+                  {renameError && (
+                    <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 2 }}>
+                      {renameError}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
+                  <button
+                    className={cn("navitem", project?.id === p.id && "navitem-active")}
+                    title={p.rootPath}
+                    onClick={() => openRecent(p.rootPath)}
+                    style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
+                  >
+                    {p.name}
+                  </button>
+                  <IconButton title="Rename" onClick={() => startRename(p)}>
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                  </IconButton>
+                </div>
+              )
+            )
           )}
         </div>
 
@@ -308,7 +382,15 @@ function App() {
       </aside>
 
       <main style={{ flex: 1, minWidth: 0 }}>
-        {view === "home" && <Home onOpened={applyResult} />}
+        {view === "home" && (
+          <Home
+            onOpened={applyResult}
+            onRenamed={(u) => {
+              setRecentProjects((prev) => prev.map((p) => (p.id === u.id ? u : p)));
+              if (project?.id === u.id) setProject(u);
+            }}
+          />
+        )}
         {view === "project" && (
           <Project
             project={project}

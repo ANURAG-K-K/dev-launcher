@@ -48,6 +48,28 @@ pub async fn open_project(
     })
 }
 
+/// Trims and validates a project name is non-empty. Returns the trimmed name.
+fn validate_project_name(name: &str) -> Result<&str, AppError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Persist("project name cannot be empty".into()));
+    }
+    Ok(trimmed)
+}
+
+/// Renames a project (sidebar/Home rename UI).
+#[tauri::command]
+pub async fn rename_project(
+    state: State<'_, AppState>,
+    project_id: i64,
+    name: String,
+) -> Result<persistence::Project, AppError> {
+    let trimmed = validate_project_name(&name)?;
+    persistence::rename_project(&state.pool, project_id, trimmed)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Re-scan an already-open project (manual Refresh, F2/D3).
 #[tauri::command]
 pub async fn scan_repositories(
@@ -451,6 +473,39 @@ pub async fn open_repo_terminal(
     {
         let _ = repo;
         Err(AppError::Launch("open terminal is Windows-only in v1".into()))
+    }
+}
+
+/// Opens the repository folder in VS Code. Windows-only in v1, matching
+/// `open_repo_folder`/`open_repo_terminal`. `code` on Windows is a `.cmd` shim (like
+/// npm/pnpm), so it needs `cmd /C` wrapping — CREATE_NO_WINDOW keeps that wrapper invisible;
+/// VS Code opens its own window regardless.
+#[tauri::command]
+pub async fn open_repo_vscode(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<(), AppError> {
+    let repo = persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", "code", &repo.path])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| {
+                AppError::Launch(format!("failed to open VS Code: {e} (is 'code' on your PATH?)"))
+            })?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = repo;
+        Err(AppError::Launch("open with VS Code is Windows-only in v1".into()))
     }
 }
 
@@ -1708,5 +1763,17 @@ mod settings_tests {
         // Fields that WERE present in the old blob are preserved, not overwritten by defaults.
         assert_eq!(parsed.theme, "dark");
         assert_eq!(parsed.launch_delay_ms, 500);
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn validate_project_name_rejects_empty_and_whitespace() {
+        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name("   ").is_err());
+        assert_eq!(validate_project_name("  My Project  ").unwrap(), "My Project");
     }
 }

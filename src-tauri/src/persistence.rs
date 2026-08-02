@@ -75,8 +75,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .map_err(|e| sqlx::Error::Migrate(Box::new(e)))
 }
 
-/// Insert the project if new, else update name + last_opened_at + updated_at. Keyed on
+/// Insert the project if new, else update last_opened_at + updated_at. Keyed on
 /// `root_path` (data-model.md §3.1, §3.2 upsert-on-rediscovery convention).
+/// NOTE: `name` is deliberately excluded from the UPDATE clause so that user-defined renames
+/// (via `rename_project`) survive reopening the project.
 pub async fn upsert_project(
     pool: &SqlitePool,
     name: &str,
@@ -89,7 +91,6 @@ pub async fn upsert_project(
         INSERT INTO projects (name, root_path, last_opened_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(root_path) DO UPDATE SET
-            name = excluded.name,
             last_opened_at = excluded.last_opened_at,
             updated_at = excluded.updated_at
         "#,
@@ -104,6 +105,21 @@ pub async fn upsert_project(
 
     sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE root_path = ?")
         .bind(root_path)
+        .fetch_one(pool)
+        .await
+}
+
+/// Renames a project, returning the updated row.
+pub async fn rename_project(pool: &SqlitePool, id: i64, name: &str) -> Result<Project, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE projects SET name = ?, updated_at = ? WHERE id = ?")
+        .bind(name)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
+        .bind(id)
         .fetch_one(pool)
         .await
 }
@@ -718,13 +734,14 @@ mod tests {
             .await
             .expect("first upsert failed");
 
-        // Re-upsert with the same root_path: should update, not duplicate.
-        let second = upsert_project(&pool, "My Project Renamed", "/repos/my-project")
+        // Re-upsert with the same root_path: should update last_opened_at but preserve name.
+        // (Name is only changeable via rename_project, not via upsert.)
+        let second = upsert_project(&pool, "Different Name", "/repos/my-project")
             .await
             .expect("second upsert failed");
 
         assert_eq!(first.id, second.id);
-        assert_eq!(second.name, "My Project Renamed");
+        assert_eq!(second.name, "My Project", "name must not change on re-upsert, only via rename_project");
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
             .fetch_one(&pool)
@@ -892,5 +909,46 @@ mod tests {
 
         pool.close().await;
         cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn rename_project_updates_name_only() {
+        let (pool, _path) = setup_test_db().await;
+        let created = upsert_project(&pool, "Original", "/repos/x")
+            .await
+            .expect("upsert failed");
+
+        let renamed = rename_project(&pool, created.id, "Renamed")
+            .await
+            .expect("rename failed");
+
+        assert_eq!(renamed.id, created.id);
+        assert_eq!(renamed.name, "Renamed");
+        assert_eq!(renamed.root_path, created.root_path);
+        assert_eq!(renamed.created_at, created.created_at);
+        assert_ne!(renamed.updated_at, created.updated_at, "updated_at should refresh on rename");
+    }
+
+    #[tokio::test]
+    async fn upsert_project_does_not_revert_a_rename() {
+        let (pool, _path) = setup_test_db().await;
+        let created = upsert_project(&pool, "folder-basename", "/repos/y")
+            .await
+            .expect("upsert failed");
+        rename_project(&pool, created.id, "My Custom Name")
+            .await
+            .expect("rename failed");
+
+        // Simulates reopening the project: open_project always re-derives the name from the
+        // folder basename and calls upsert_project again with it.
+        let reopened = upsert_project(&pool, "folder-basename", "/repos/y")
+            .await
+            .expect("re-upsert failed");
+
+        assert_eq!(reopened.id, created.id);
+        assert_eq!(
+            reopened.name, "My Custom Name",
+            "a rename must survive reopening the project — this is the bug this task fixes"
+        );
     }
 }

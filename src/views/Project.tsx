@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   applyProfile,
   createProfile,
@@ -10,6 +10,7 @@ import {
   gitSwitchBranch,
   openRepoFolder,
   openRepoTerminal,
+  openRepoVscode,
   restartRepo,
   scanRepositories,
   setRepositoryEnabled,
@@ -26,53 +27,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 import { BranchSwitchDialog } from "./BranchSwitchDialog";
-
-const ICON_BTN: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 6,
-  cursor: "pointer",
-  background: "transparent",
-  border: "none",
-  color: "var(--color-text)",
-  borderRadius: 4,
-};
-
-function IconButton({
-  title,
-  onClick,
-  disabled,
-  color,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  disabled?: boolean;
-  color?: string;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      disabled={disabled}
-      style={{ ...ICON_BTN, color: color ?? ICON_BTN.color, opacity: disabled ? 0.4 : 1 }}
-      onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.background = "color-mix(in srgb, var(--color-text) 8%, transparent)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = "transparent";
-      }}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        {children}
-      </svg>
-    </button>
-  );
-}
+import { IconButton } from "@/components/IconButton";
 
 /** Project view (F4): repository list for the open project + Refresh (F2/D3). */
 export function Project({
@@ -686,6 +641,16 @@ export function Project({
                             <rect x="3" y="4" width="18" height="16" rx="2" />
                             <polyline points="7 9 10 12 7 15" />
                             <line x1="12" y1="15" x2="16" y2="15" />
+                          </IconButton>
+                        )}
+                        {visibleActions.includes("openWithCode") && (
+                          <IconButton
+                            title="Open with VS Code"
+                            disabled={busyRow}
+                            onClick={() => runAction(r.id, () => openRepoVscode(r.id))}
+                          >
+                            <polyline points="16 18 22 12 16 6" />
+                            <polyline points="8 6 2 12 8 18" />
                           </IconButton>
                         )}
                         {visibleActions.includes("edit") && (

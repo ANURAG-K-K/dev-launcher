@@ -37,6 +37,9 @@ export const gitSwitchBranch = (options: {
 export const listRecentProjects = () =>
   invoke<Project[]>("list_recent_projects");
 
+export const renameProject = (projectId: number, name: string) =>
+  invoke<Project>("rename_project", { projectId, name });
+
 export const startRepo = (repositoryId: number) =>
   invoke<RepoStatus>("start_repo", { repositoryId });
 
@@ -98,6 +101,9 @@ export const openRepoFolder = (repositoryId: number) =>
 
 export const openRepoTerminal = (repositoryId: number) =>
   invoke<void>("open_repo_terminal", { repositoryId });
+
+export const openRepoVscode = (repositoryId: number) =>
+  invoke<void>("open_repo_vscode", { repositoryId });
 
 export const listLaunchHistory = (projectId: number) =>
   invoke<LaunchRecord[]>("list_launch_history", { projectId });

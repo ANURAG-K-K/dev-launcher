@@ -68,6 +68,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_project,
+            commands::rename_project,
             commands::scan_repositories,
             commands::list_recent_projects,
             commands::get_settings,
@@ -79,6 +80,7 @@ pub fn run() {
             commands::remove_repository,
             commands::open_repo_folder,
             commands::open_repo_terminal,
+            commands::open_repo_vscode,
             commands::git_status_project,
             commands::git_fetch,
             commands::git_pull,
