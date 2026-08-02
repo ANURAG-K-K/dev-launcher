@@ -65,6 +65,12 @@ export interface RepoGitStatus {
   behind: number;
 }
 
+/** A branch available to switch to; `isCurrent` is true for at most one entry. */
+export interface BranchEntry {
+  name: string;
+  isCurrent: boolean;
+}
+
 export interface ExecuteResult {
   started: number[];
   skipped: number[];

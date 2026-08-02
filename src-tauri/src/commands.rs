@@ -529,6 +529,92 @@ pub async fn git_status_project(
     Ok(out)
 }
 
+/// A branch available to switch to (R-branch-switch). `is_current` is never true for more than
+/// one entry, and is never true at all while the repo is in detached-HEAD state (HEAD matches
+/// no branch name in that case).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchEntry {
+    pub name: String,
+    pub is_current: bool,
+}
+
+const COMMON_BRANCH_ORDER: &[&str] = &["main", "master", "develop"];
+
+/// Sort key: current branch first, then the fixed common-branch order, then alphabetical.
+fn branch_sort_key(name: &str, current: &str) -> (u8, usize, String) {
+    if name == current {
+        (0, 0, String::new())
+    } else if let Some(idx) = COMMON_BRANCH_ORDER.iter().position(|c| *c == name) {
+        (1, idx, String::new())
+    } else {
+        (2, 0, name.to_string())
+    }
+}
+
+/// Local branches ∪ remote-only branches (by plain name, `origin/` stripped, `origin/HEAD`
+/// excluded), deduplicated, sorted per `branch_sort_key`. Assumes a single `origin` remote.
+fn git_list_branches_impl(path: &str) -> Result<Vec<BranchEntry>, AppError> {
+    let current = git_command(path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let local: Vec<String> = {
+        let out = git_command(path)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+            .output()
+            .map_err(|e| AppError::Launch(format!("git for-each-ref failed: {e}")))?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+
+    let remote: Vec<String> = {
+        let out = git_command(path)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
+            .output()
+            .map_err(|e| AppError::Launch(format!("git for-each-ref failed: {e}")))?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+            .filter_map(|l| l.split_once('/').map(|(_, name)| name.to_string()))
+            .collect()
+    };
+
+    let mut names = local;
+    for r in remote {
+        if !names.contains(&r) {
+            names.push(r);
+        }
+    }
+
+    names.sort_by(|a, b| branch_sort_key(a, &current).cmp(&branch_sort_key(b, &current)));
+
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let is_current = name == current;
+            BranchEntry { name, is_current }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn git_list_branches(
+    state: State<'_, AppState>,
+    repository_id: i64,
+) -> Result<Vec<BranchEntry>, AppError> {
+    let path = git_repo_path(&state, repository_id).await?;
+    git_list_branches_impl(&path)
+}
+
 /// Builds a `git -C <path>` command with console-window suppression on Windows (every git
 /// subprocess in this app must be spawned through this helper — see spec 2026-07-31).
 fn git_command(path: &str) -> std::process::Command {
@@ -540,6 +626,27 @@ fn git_command(path: &str) -> std::process::Command {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     cmd
+}
+
+/// True if `path`'s working tree has any uncommitted changes (tracked or untracked).
+fn git_is_dirty(path: &str) -> bool {
+    git_command(path)
+        .args(["status", "--porcelain"])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Resolves `refs/stash` to a commit hash, or `None` if the stash list is empty. Comparing this
+/// before/after a `git stash push` is the reliable way to tell whether a stash was actually
+/// created (vs. `git status --porcelain` dirtiness, which includes untracked files that a
+/// non-`-u` stash push silently skips).
+fn stash_ref(path: &str) -> Option<String> {
+    let out = git_command(path)
+        .args(["rev-parse", "--verify", "--quiet", "refs/stash"])
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Run `git` in `path` and return its status, or None if it isn't a git working tree.
@@ -556,11 +663,7 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
         return None;
     }
 
-    let dirty = git_command(path)
-        .args(["status", "--porcelain"])
-        .output()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+    let dirty = git_is_dirty(path);
 
     // `--left-right --count @{upstream}...HEAD` prints "<behind>\t<ahead>"; missing upstream -> 0/0.
     let (ahead, behind) = git_command(path)
@@ -589,6 +692,82 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
         ahead,
         behind,
     })
+}
+
+/// Switches `path` to `branch`. If dirty and `stash` is true, stashes first (never silently —
+/// callers must pass `stash: true` explicitly). Returns the freshly computed git status.
+fn git_switch_branch_impl(
+    path: &str,
+    branch: &str,
+    stash: bool,
+    stash_message: &str,
+    stash_untracked: bool,
+) -> Result<RepoGitStatus, AppError> {
+    let dirty = git_is_dirty(path);
+    // Whether `git stash push` actually created a stash — NOT the same as `dirty`. A tree that's
+    // dirty only with untracked files (`??` in `git status --porcelain`) still leaves `stash push`
+    // (without `-u`) a no-op ("No local changes to save", exit 0), so `dirty` alone would
+    // incorrectly claim a stash happened. We detect a real stash by comparing the `refs/stash`
+    // ref before and after the push — it only changes when a stash was actually created.
+    let mut stash_created = false;
+    if dirty {
+        if !stash {
+            return Err(AppError::Launch(
+                "repository has uncommitted changes — stash or commit them before switching branches".into(),
+            ));
+        }
+        let before = stash_ref(path);
+        let mut stash_args: Vec<&str> = vec!["stash", "push"];
+        if stash_untracked {
+            stash_args.push("-u");
+        }
+        if !stash_message.is_empty() {
+            stash_args.push("-m");
+            stash_args.push(stash_message);
+        }
+        run_git(path, &stash_args)?;
+        stash_created = stash_ref(path) != before;
+    }
+
+    // `--` guards against `branch` being smuggled in as a flag (e.g. a leading `-`); the IPC
+    // command accepts any string, so this is defense-in-depth even though today's only caller
+    // (the branch picker) always passes a real branch name from `git_list_branches`.
+    if let Err(e) = run_git(path, &["switch", "--", branch]) {
+        return Err(if stash_created {
+            AppError::Launch(format!(
+                "changes were stashed successfully, but switching to '{branch}' failed: {e}. Run `git stash list` to find your stashed changes."
+            ))
+        } else {
+            e
+        });
+    }
+
+    // repository_id isn't known inside this pure-path helper; the command wrapper below fills
+    // it in via a second git_status_for call keyed by the real repository_id.
+    git_status_for(path, 0)
+        .ok_or_else(|| AppError::Launch("branch switched, but failed to read updated status".into()))
+}
+
+#[tauri::command]
+pub async fn git_switch_branch(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    branch: String,
+    stash: bool,
+    stash_message: String,
+    stash_untracked: bool,
+) -> Result<RepoGitStatus, AppError> {
+    let path = git_repo_path(&state, repository_id).await?;
+    let result = git_switch_branch_impl(&path, &branch, stash, &stash_message, stash_untracked);
+    // Invalidate unconditionally, even on error: a stash may have already mutated the working
+    // tree before the switch itself failed, which would otherwise leave a stale cached status
+    // (e.g. still `dirty: true`) that contradicts an error message telling the user their
+    // changes were safely stashed. Invalidating when nothing changed is harmless — just a cache
+    // miss on the next read.
+    state.git_status_cache.invalidate(repository_id);
+    let mut status = result?;
+    status.repository_id = repository_id;
+    Ok(status)
 }
 
 /// Fetch from the repository's remote (R5). Invalidates the cached status for this repo —
@@ -1179,6 +1358,291 @@ mod git_tests {
         let cached = cache.get(1, &canonical_path, crate::git_status_cache::GIT_STATUS_CACHE_TTL);
         assert_eq!(cached.unwrap().branch, status.branch);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn init_temp_repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mrl-branch-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp repo dir");
+        Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&dir).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        std::fs::write(dir.join("a.txt"), "hi").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&dir).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        dir
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn git_is_dirty_reports_clean_and_dirty() {
+        let dir = init_temp_repo();
+        assert!(!git_is_dirty(dir.to_str().unwrap()));
+        std::fs::write(dir.join("a.txt"), "changed").unwrap();
+        assert!(git_is_dirty(dir.to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_list_branches_lists_local_branches_current_first() {
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-a"]);
+        git(&dir, &["branch", "aardvark"]);
+
+        let branches = git_list_branches_impl(dir.to_str().unwrap()).unwrap();
+        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "aardvark", "feature-a"]);
+        assert!(branches[0].is_current);
+        assert!(!branches[1].is_current);
+        assert!(!branches[2].is_current);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_list_branches_orders_common_branch_names_before_others() {
+        let dir = init_temp_repo();
+        git(&dir, &["checkout", "-q", "-b", "zeta"]);
+        git(&dir, &["branch", "develop"]);
+        git(&dir, &["branch", "master"]);
+
+        let branches = git_list_branches_impl(dir.to_str().unwrap()).unwrap();
+        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+        // current ("zeta") first; the other three branches (main, develop, master) are ALL
+        // common names, so they sort by COMMON_BRANCH_ORDER's fixed order (main, master,
+        // develop), not alphabetically — there's nothing left in the "rest" bucket here.
+        assert_eq!(names, vec!["zeta", "main", "master", "develop"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_list_branches_excludes_remote_head_and_dedupes_by_name() {
+        // Bare repo acting as `origin`, plus a clone with a second branch pushed only there.
+        let bare_dir = std::env::temp_dir().join(format!("mrl-branch-bare-{}", std::process::id()));
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git(&bare_dir, &["init", "-q", "--bare", "-b", "main"]);
+
+        let clone_dir = init_temp_repo();
+        git(&clone_dir, &["remote", "add", "origin", bare_dir.to_str().unwrap()]);
+        git(&clone_dir, &["push", "-q", "origin", "main"]);
+        git(&clone_dir, &["checkout", "-q", "-b", "feature-b"]);
+        git(&clone_dir, &["push", "-q", "-u", "origin", "feature-b"]);
+        git(&clone_dir, &["checkout", "-q", "main"]);
+        git(&clone_dir, &["branch", "-D", "feature-b"]); // now only exists on origin
+        git(&clone_dir, &["fetch", "-q"]);
+
+        let branches = git_list_branches_impl(clone_dir.to_str().unwrap()).unwrap();
+        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"feature-b"), "expected remote-only branch to appear: {names:?}");
+        assert_eq!(names.iter().filter(|n| **n == "main").count(), 1, "main must not be duplicated");
+        assert!(!names.iter().any(|n| n.contains("HEAD")), "origin/HEAD must be excluded");
+
+        let _ = std::fs::remove_dir_all(&bare_dir);
+        let _ = std::fs::remove_dir_all(&clone_dir);
+    }
+
+    #[tokio::test]
+    async fn git_list_branches_excludes_detached_head_pseudo_entry() {
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-detached"]);
+
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        git(&dir, &["checkout", "-q", "--detach", &sha]);
+
+        let branches = git_list_branches_impl(dir.to_str().unwrap()).unwrap();
+        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(
+            !names.iter().any(|n| *n == "HEAD" || n.contains("HEAD")),
+            "detached HEAD pseudo-entry must be excluded: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with('(')),
+            "pseudo-entry like '(HEAD detached at ...)' must be excluded: {names:?}"
+        );
+        assert!(names.contains(&"main"), "pre-existing local branch must remain: {names:?}");
+        assert!(names.contains(&"feature-detached"), "pre-existing local branch must remain: {names:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_succeeds_on_clean_repo() {
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-c"]);
+
+        let status = git_switch_branch_impl(dir.to_str().unwrap(), "feature-c", false, "", false).unwrap();
+        assert_eq!(status.branch, "feature-c");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_rejects_dirty_switch_without_stash() {
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-d"]);
+        std::fs::write(dir.join("a.txt"), "dirty").unwrap();
+
+        let result = git_switch_branch_impl(dir.to_str().unwrap(), "feature-d", false, "", false);
+        assert!(result.is_err());
+        // Branch must be unchanged.
+        let branch_out = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&branch_out.stdout).trim(), "main");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_stashes_with_custom_message_then_switches() {
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-e"]);
+        std::fs::write(dir.join("a.txt"), "dirty again").unwrap();
+
+        let status = git_switch_branch_impl(dir.to_str().unwrap(), "feature-e", true, "my wip", false).unwrap();
+        assert_eq!(status.branch, "feature-e");
+        assert!(!status.dirty, "stash should have cleared the working tree");
+
+        let stash_out = Command::new("git").args(["stash", "list"]).current_dir(&dir).output().unwrap();
+        let stash_list = String::from_utf8_lossy(&stash_out.stdout);
+        assert!(stash_list.contains("my wip"), "expected custom stash message in: {stash_list}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_to_remote_only_branch_creates_tracking_branch() {
+        let bare_dir = std::env::temp_dir().join(format!("mrl-branch-bare2-{}", std::process::id()));
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git(&bare_dir, &["init", "-q", "--bare", "-b", "main"]);
+
+        let clone_dir = init_temp_repo();
+        git(&clone_dir, &["remote", "add", "origin", bare_dir.to_str().unwrap()]);
+        git(&clone_dir, &["push", "-q", "origin", "main"]);
+        git(&clone_dir, &["checkout", "-q", "-b", "feature-f"]);
+        git(&clone_dir, &["push", "-q", "-u", "origin", "feature-f"]);
+        git(&clone_dir, &["checkout", "-q", "main"]);
+        git(&clone_dir, &["branch", "-D", "feature-f"]);
+        git(&clone_dir, &["fetch", "-q"]);
+
+        let status = git_switch_branch_impl(clone_dir.to_str().unwrap(), "feature-f", false, "", false).unwrap();
+        assert_eq!(status.branch, "feature-f");
+
+        let upstream_out = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "feature-f@{upstream}"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&upstream_out.stdout).trim(), "origin/feature-f");
+
+        let _ = std::fs::remove_dir_all(&bare_dir);
+        let _ = std::fs::remove_dir_all(&clone_dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_untracked_only_does_not_create_real_stash() {
+        // Untracked-only dirty tree, stash requested but stash_untracked=false: `git stash push`
+        // (no `-u`) has nothing to stash, so no real stash should be created, and the switch
+        // (to a real, existing branch) should still succeed since untracked files don't block it.
+        let dir = init_temp_repo();
+        git(&dir, &["branch", "feature-untracked"]);
+        std::fs::write(dir.join("untracked.txt"), "new file").unwrap();
+
+        let status =
+            git_switch_branch_impl(dir.to_str().unwrap(), "feature-untracked", true, "", false).unwrap();
+        assert_eq!(status.branch, "feature-untracked");
+
+        let stash_out = Command::new("git").args(["stash", "list"]).current_dir(&dir).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&stash_out.stdout).trim().is_empty(),
+            "no real stash should have been created for untracked-only changes without -u"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_untracked_only_switch_failure_does_not_claim_stash_success() {
+        // Same untracked-only setup as above, but the switch itself fails (nonexistent target
+        // branch). This is the scenario that actually exposes the did_stash/was-dirty conflation:
+        // pre-fix, `did_stash` was set from the pre-check dirty flag (true, because of the
+        // untracked file) even though `git stash push` (no -u) created no stash at all, so the
+        // error would falsely claim "changes were stashed successfully".
+        let dir = init_temp_repo();
+        std::fs::write(dir.join("untracked2.txt"), "new file").unwrap();
+
+        let result =
+            git_switch_branch_impl(dir.to_str().unwrap(), "this-branch-does-not-exist", true, "", false);
+        let err = result.expect_err("switch to a nonexistent branch must fail");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("stashed successfully"),
+            "must not claim a stash succeeded when nothing was actually stashed: {msg}"
+        );
+
+        let stash_out = Command::new("git").args(["stash", "list"]).current_dir(&dir).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&stash_out.stdout).trim().is_empty(),
+            "no stash should exist since nothing was actually stashed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_switch_branch_stash_succeeds_but_switch_to_nonexistent_branch_fails() {
+        // Case "d": a real stash IS created (tracked-file change), but the subsequent switch
+        // fails. The error must use the "stashed successfully" wording, and `git stash list`
+        // must show exactly one real entry, proving the claim is accurate.
+        let dir = init_temp_repo();
+        std::fs::write(dir.join("a.txt"), "dirty tracked change").unwrap();
+
+        let result =
+            git_switch_branch_impl(dir.to_str().unwrap(), "this-branch-does-not-exist", true, "", false);
+        let err = result.expect_err("switch to a nonexistent branch must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stashed successfully"),
+            "expected stash-succeeded wording, got: {msg}"
+        );
+
+        let stash_out = Command::new("git").args(["stash", "list"]).current_dir(&dir).output().unwrap();
+        let stash_list = String::from_utf8_lossy(&stash_out.stdout);
+        assert_eq!(
+            stash_list.lines().filter(|l| !l.is_empty()).count(),
+            1,
+            "expected exactly one real stash entry: {stash_list}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

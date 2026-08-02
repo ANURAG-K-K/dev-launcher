@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
+import type { BranchEntry, DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -22,6 +22,17 @@ export const gitFetch = (repositoryId: number) =>
 
 export const gitPull = (repositoryId: number) =>
   invoke<string>("git_pull", { repositoryId });
+
+export const gitListBranches = (repositoryId: number) =>
+  invoke<BranchEntry[]>("git_list_branches", { repositoryId });
+
+export const gitSwitchBranch = (options: {
+  repositoryId: number;
+  branch: string;
+  stash: boolean;
+  stashMessage: string;
+  stashUntracked: boolean;
+}) => invoke<RepoGitStatus>("git_switch_branch", options);
 
 export const listRecentProjects = () =>
   invoke<Project[]>("list_recent_projects");

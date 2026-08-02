@@ -7,6 +7,7 @@ import {
   gitFetch,
   gitPull,
   gitStatusProject,
+  gitSwitchBranch,
   openRepoFolder,
   openRepoTerminal,
   restartRepo,
@@ -24,6 +25,7 @@ import {
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
+import { BranchSwitchDialog } from "./BranchSwitchDialog";
 
 const ICON_BTN: CSSProperties = {
   display: "inline-flex",
@@ -109,6 +111,7 @@ export function Project({
   const [rowError, setRowError] = useState<Record<number, string>>({});
   const [enabledBusy, setEnabledBusy] = useState<number | null>(null);
   const [editingRepo, setEditingRepo] = useState<Repository | null>(null);
+  const [switchingBranchRepo, setSwitchingBranchRepo] = useState<Repository | null>(null);
   const [executeBusy, setExecuteBusy] = useState(false);
   const [launchDelayMs, setLaunchDelayMs] = useState(initialLaunchDelayMs);
   const [executeResult, setExecuteResult] = useState<ExecuteResult | null>(null);
@@ -521,8 +524,24 @@ export function Project({
                     <td style={{ fontWeight: 600 }}>{r.name}</td>
                     <td style={{ fontSize: 12 }}>
                       {gitByRepo[r.id] ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                          <span className="mono">{gitByRepo[r.id].branch}</span>
+                        <span
+                          role="button"
+                          title="Click to switch branch"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            cursor: busyRow ? "default" : "pointer",
+                            opacity: busyRow ? 0.5 : 1,
+                          }}
+                          onClick={() => {
+                            if (busyRow) return;
+                            setSwitchingBranchRepo(r);
+                          }}
+                        >
+                          <span className="mono">
+                            {gitByRepo[r.id].branch === "HEAD" ? "Detached HEAD" : gitByRepo[r.id].branch}
+                          </span>
                           {gitByRepo[r.id].dirty && (
                             <span title="Uncommitted changes" style={{ color: "var(--color-status-bad-fg)" }}>
                               ●
@@ -710,6 +729,29 @@ export function Project({
           onClose={() => setEditingRepo(null)}
           onRepoUpdated={onRepoUpdated}
           onDependenciesChanged={onDependenciesChanged}
+        />
+      )}
+      {switchingBranchRepo && gitByRepo[switchingBranchRepo.id] && (
+        <BranchSwitchDialog
+          repo={switchingBranchRepo}
+          currentStatus={gitByRepo[switchingBranchRepo.id]}
+          switching={rowBusy === switchingBranchRepo.id}
+          onClose={() => setSwitchingBranchRepo(null)}
+          onSwitch={async (branch, stash, stashMessage, stashUntracked) => {
+            setRowBusy(switchingBranchRepo.id);
+            try {
+              const status = await gitSwitchBranch({
+                repositoryId: switchingBranchRepo.id,
+                branch,
+                stash,
+                stashMessage,
+                stashUntracked,
+              });
+              setGitByRepo((prev) => ({ ...prev, [switchingBranchRepo.id]: status }));
+            } finally {
+              setRowBusy(null);
+            }
+          }}
         />
       )}
     </div>

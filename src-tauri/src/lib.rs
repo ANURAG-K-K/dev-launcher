@@ -82,6 +82,8 @@ pub fn run() {
             commands::git_status_project,
             commands::git_fetch,
             commands::git_pull,
+            commands::git_list_branches,
+            commands::git_switch_branch,
             commands::list_dependencies,
             commands::set_repository_dependencies,
             commands::execute_project,
