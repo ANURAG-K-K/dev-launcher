@@ -6,6 +6,10 @@ process tracking, launch profiles, and per-repo logs.
 
 Built with **Tauri v2**, **Rust**, **React + Vite + TypeScript**, and **SQLite**.
 
+> **Platform support:** Windows 10/11 only. The process manager relies on Windows Job Objects
+> for tree-killing spawned processes, and the bundler targets NSIS — macOS/Linux are not
+> currently supported.
+
 ## Features
 
 - **Repository discovery** — scans a project root's immediate child folders for `package.json`
@@ -23,7 +27,8 @@ Built with **Tauri v2**, **Rust**, **React + Vite + TypeScript**, and **SQLite**
 
 - [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/)
 - [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
-- [Tauri v2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS
+- Windows 10/11 with [Tauri v2 system dependencies](https://v2.tauri.app/start/prerequisites/#windows)
+  (WebView2, MSVC build tools)
 
 ## Getting started
 
