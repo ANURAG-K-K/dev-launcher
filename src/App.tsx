@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { Home } from "@/views/Home";
@@ -7,6 +8,7 @@ import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
 import { Settings } from "@/views/Settings";
 import { History } from "@/views/History";
+import { ChangelogDialog } from "@/views/ChangelogDialog";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
 import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, renameProject, restartRepo } from "@/api";
@@ -75,6 +77,12 @@ function App() {
   const [renameError, setRenameError] = useState("");
   const renameCancelledRef = useRef(false);
   const crashCountsRef = useRef<Record<number, number>>({});
+  const [appVersion, setAppVersion] = useState("");
+  const [changelogOpen, setChangelogOpen] = useState(false);
+
+  useEffect(() => {
+    void getVersion().then(setAppVersion);
+  }, []);
 
   // Live mirror of repositories for use inside the []-deps event listener (avoids a stale closure).
   const reposRef = useRef<Repository[]>([]);
@@ -376,10 +384,29 @@ function App() {
           )}
         </div>
 
-        <div style={{ borderTop: "2px solid var(--color-divider)", padding: "14px 16px", fontSize: 11, opacity: 0.5 }}>
-          v0.1.0 · Tauri
-        </div>
+        <button
+          type="button"
+          onClick={() => setChangelogOpen(true)}
+          title="View changelog"
+          style={{
+            width: "100%",
+            borderTop: "2px solid var(--color-divider)",
+            padding: "14px 16px",
+            fontSize: 11,
+            opacity: 0.5,
+            background: "none",
+            textAlign: "left",
+            cursor: "pointer",
+            color: "inherit",
+          }}
+        >
+          {appVersion ? `v${appVersion}` : ""}
+        </button>
       </aside>
+
+      {changelogOpen && (
+        <ChangelogDialog version={appVersion} onClose={() => setChangelogOpen(false)} />
+      )}
 
       <main style={{ flex: 1, minWidth: 0 }}>
         {view === "home" && (

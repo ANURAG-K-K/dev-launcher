@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { getSettings, updateSettings } from "@/api";
 import { applyTheme } from "@/lib/theme";
 import { ACTION_KEYS } from "@/lib/actionKeys";
+import { IconButton } from "@/components/IconButton";
+import { GuideDialog } from "@/views/GuideDialog";
 import type { Settings as SettingsT } from "@/types";
 
 /** Settings view (F14): theme, launch delay, auto-detect, restore, auto-restart, etc. */
@@ -9,6 +11,7 @@ export function Settings() {
   const [settings, setSettings] = useState<SettingsT | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   useEffect(() => {
     getSettings().then(setSettings).catch((e) => setError(String(e)));
@@ -46,10 +49,18 @@ export function Settings() {
 
   return (
     <div style={{ maxWidth: 680, padding: "40px 48px 64px" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <h1 style={{ fontSize: 32, marginBottom: 6 }}>Settings</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <h1 style={{ fontSize: 32, marginBottom: 6 }}>Settings</h1>
+          <IconButton title="Guide: how to use this app" onClick={() => setGuideOpen(true)}>
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+          </IconButton>
+        </div>
         {saved && <span className="text-muted" style={{ fontSize: 12 }}>Saved</span>}
       </div>
+      {guideOpen && <GuideDialog onClose={() => setGuideOpen(false)} />}
       <p className="text-muted" style={{ margin: "0 0 28px" }}>
         Preferences are stored locally and applied on next launch.
       </p>

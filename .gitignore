@@ -22,3 +22,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust / Tauri build output (also self-ignored via target/.gitignore)
+/src-tauri/target/
+
+# Local SQLite database and env files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.env
+.env.*
