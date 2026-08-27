@@ -93,7 +93,7 @@ export interface LaunchItemRecord {
   stoppedAt: string | null;
 }
 
-/** A recorded "Execute All" run. */
+/** A recorded "Execute" run. */
 export interface LaunchRecord {
   id: number;
   profileName: string | null;

@@ -179,7 +179,7 @@ export function Settings() {
       <p className="text-muted" style={{ margin: "0 0 14px" }}>
         Choose which action buttons appear on each repository row.
       </p>
-      {ACTION_KEYS.map(({ key, label }) => (
+      {ACTION_KEYS.map(({ key, label, icon }) => (
         <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
           <input
             type="checkbox"
@@ -193,6 +193,19 @@ export function Settings() {
               )
             }
           />
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ flex: "none" }}
+          >
+            {icon}
+          </svg>
           {label}
         </label>
       ))}

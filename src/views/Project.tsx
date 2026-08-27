@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   applyProfile,
   createProfile,
@@ -28,6 +28,11 @@ import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, Proje
 import { RepoEditDialog } from "./RepoEditDialog";
 import { BranchSwitchDialog } from "./BranchSwitchDialog";
 import { IconButton } from "@/components/IconButton";
+import { ACTION_KEYS } from "@/lib/actionKeys";
+
+const ACTION_ICON: Record<string, ReactNode> = Object.fromEntries(
+  ACTION_KEYS.map(({ key, icon }) => [key, icon]),
+);
 
 /** Project view (F4): repository list for the open project + Refresh (F2/D3). */
 export function Project({
@@ -413,7 +418,7 @@ export function Project({
             />
           </label>
           <button type="button" className="btn btn-primary" onClick={executeAll} disabled={executeBusy}>
-            {executeBusy ? "Executing…" : "Execute All"}
+            {executeBusy ? "Executing…" : "Execute"}
           </button>
           <button
             type="button"
@@ -558,8 +563,7 @@ export function Project({
                             color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
                             onClick={() => toggleVisibleConsole(r)}
                           >
-                            <rect x="3" y="4" width="18" height="13" rx="1" />
-                            <path d="M8 21h8 M12 17v4" />
+                            {ACTION_ICON.visibleConsole}
                           </IconButton>
                         )}
                         {(status === "stopped" || status === "crashed") && (
@@ -597,9 +601,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => gitFetch(r.id))}
                           >
-                            <path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25" />
-                            <path d="M12 12v8" />
-                            <path d="M9 17l3 3 3-3" />
+                            {ACTION_ICON.fetch}
                           </IconButton>
                         )}
                         {gitByRepo[r.id] && visibleActions.includes("pull") && (
@@ -613,14 +615,12 @@ export function Project({
                               })
                             }
                           >
-                            <path d="M12 3v12" />
-                            <path d="M7 10l5 5 5-5" />
-                            <path d="M4 21h16" />
+                            {ACTION_ICON.pull}
                           </IconButton>
                         )}
                         {visibleActions.includes("logs") && (
                           <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
-                            <path d="M4 6h16M4 12h16M4 18h10" />
+                            {ACTION_ICON.logs}
                           </IconButton>
                         )}
                         {visibleActions.includes("openFolder") && (
@@ -629,7 +629,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoFolder(r.id))}
                           >
-                            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                            {ACTION_ICON.openFolder}
                           </IconButton>
                         )}
                         {visibleActions.includes("openTerminal") && (
@@ -638,9 +638,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoTerminal(r.id))}
                           >
-                            <rect x="3" y="4" width="18" height="16" rx="2" />
-                            <polyline points="7 9 10 12 7 15" />
-                            <line x1="12" y1="15" x2="16" y2="15" />
+                            {ACTION_ICON.openTerminal}
                           </IconButton>
                         )}
                         {visibleActions.includes("openWithCode") && (
@@ -649,14 +647,12 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoVscode(r.id))}
                           >
-                            <polyline points="16 18 22 12 16 6" />
-                            <polyline points="8 6 2 12 8 18" />
+                            {ACTION_ICON.openWithCode}
                           </IconButton>
                         )}
                         {visibleActions.includes("edit") && (
                           <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
-                            <path d="M12 20h9" />
-                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                            {ACTION_ICON.edit}
                           </IconButton>
                         )}
                         {visibleActions.includes("remove") && (
@@ -666,9 +662,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => removeRepo(r)}
                           >
-                            <path d="M3 6h18" />
-                            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                            {ACTION_ICON.remove}
                           </IconButton>
                         )}
                       </div>
