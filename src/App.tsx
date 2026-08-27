@@ -19,8 +19,7 @@ import { IconButton } from "@/components/IconButton";
 type View = "home" | "project" | "logs" | "settings" | "history";
 
 const GITHUB_URL = "https://github.com/ANURAG-K-K/dev-launcher";
-// ponytail: points at GitHub Issues until a Google Form URL is provided; swap this constant then.
-const FEEDBACK_URL = "https://github.com/ANURAG-K-K/dev-launcher/issues";
+const FEEDBACK_URL = "https://forms.gle/RLTKySxYLspbf2pj8";
 
 const NAV: { id: View; label: string; icon: ReactNode }[] = [
   {
