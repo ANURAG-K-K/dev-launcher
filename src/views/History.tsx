@@ -3,7 +3,7 @@ import { listLaunchHistory } from "@/api";
 import type { LaunchRecord, Project } from "@/types";
 import { cn } from "@/lib/utils";
 
-/** History view (F13): past "Execute All" launch runs for the open project. */
+/** History view (F13): past "Execute" launch runs for the open project. */
 export function History({ project }: { project: Project | null }) {
   const [records, setRecords] = useState<LaunchRecord[]>([]);
 
@@ -30,7 +30,7 @@ export function History({ project }: { project: Project | null }) {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
         <div>
           <h1 style={{ fontSize: 32, marginBottom: 6 }}>History</h1>
-          <p className="text-muted" style={{ margin: 0 }}>Recent Execute All runs</p>
+          <p className="text-muted" style={{ margin: 0 }}>Recent Execute runs</p>
         </div>
         <button className="btn btn-secondary" onClick={() => refresh(project.id)}>
           Refresh
@@ -38,7 +38,7 @@ export function History({ project }: { project: Project | null }) {
       </div>
 
       {records.length === 0 ? (
-        <p className="text-muted">No launches yet — use Execute All on the Project screen.</p>
+        <p className="text-muted">No launches yet — use Execute on the Project screen.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {records.map((r) => (

@@ -304,8 +304,8 @@ function App() {
       >
         <div style={{ padding: "22px 16px 18px", borderBottom: "2px solid var(--color-divider)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src="/logo.svg" width={28} height={28} alt="" style={{ flex: "none" }} />
-            <div style={{ fontFamily: "var(--font-heading)", fontSize: 15, fontWeight: 800, letterSpacing: "0.01em", lineHeight: 1.15 }}>
+            <img src="/logo.svg" width={38} height={38} alt="" style={{ flex: "none" }} />
+            <div style={{ fontFamily: "var(--font-heading)", fontSize: 18, fontWeight: 800, letterSpacing: "0.01em", lineHeight: 1.15 }}>
               Dev
               <br />
               Launcher

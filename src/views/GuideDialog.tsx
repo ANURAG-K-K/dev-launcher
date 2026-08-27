@@ -12,7 +12,7 @@ const SECTIONS: { title: string; body: string }[] = [
     body: "Save named sets of enabled repos + order (e.g. \"Backend\", \"Everything\") from the Project view, then apply one to launch just that set.",
   },
   {
-    title: "4. Execute All",
+    title: "4. Execute",
     body: "Starts enabled repositories one at a time, respecting dependency order and the configurable launch delay between each, to avoid resource spikes.",
   },
   {
@@ -21,7 +21,7 @@ const SECTIONS: { title: string; body: string }[] = [
   },
   {
     title: "6. History",
-    body: "Every Execute All run is recorded — see past launches, their outcomes, and exit codes in the History view.",
+    body: "Every Execute run is recorded — see past launches, their outcomes, and exit codes in the History view.",
   },
 ];
 
