@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
@@ -16,6 +17,9 @@ import { applyTheme } from "@/lib/theme";
 import { IconButton } from "@/components/IconButton";
 
 type View = "home" | "project" | "logs" | "settings" | "history";
+
+const GITHUB_URL = "https://github.com/ANURAG-K-K/dev-launcher";
+const FEEDBACK_URL = "https://forms.gle/RLTKySxYLspbf2pj8";
 
 const NAV: { id: View; label: string; icon: ReactNode }[] = [
   {
@@ -384,24 +388,52 @@ function App() {
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setChangelogOpen(true)}
-          title="View changelog"
-          style={{
-            width: "100%",
-            borderTop: "2px solid var(--color-divider)",
-            padding: "14px 16px",
-            fontSize: 11,
-            opacity: 0.5,
-            background: "none",
-            textAlign: "left",
-            cursor: "pointer",
-            color: "inherit",
-          }}
-        >
-          {appVersion ? `v${appVersion}` : ""}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", borderTop: "2px solid var(--color-divider)" }}>
+          <button
+            type="button"
+            onClick={() => setChangelogOpen(true)}
+            title="View changelog"
+            style={{
+              flex: 1,
+              padding: "14px 16px",
+              fontSize: 11,
+              opacity: 0.5,
+              background: "none",
+              textAlign: "left",
+              cursor: "pointer",
+              color: "inherit",
+            }}
+          >
+            {appVersion ? `v${appVersion}` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => void openUrl(FEEDBACK_URL)}
+            title="Report a bug, request a feature, or leave feedback"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "8px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "inherit",
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            Feedback
+          </button>
+          <IconButton title="View on GitHub" onClick={() => void openUrl(GITHUB_URL)}>
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </IconButton>
+        </div>
       </aside>
 
       {changelogOpen && (
