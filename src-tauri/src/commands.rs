@@ -89,6 +89,40 @@ pub async fn scan_repositories(
     })
 }
 
+/// Manually adds a single repository by path, for cases the auto-scan doesn't reach (feedback
+/// #8: nested repos more than one level deep, or any other layout the heuristic misses).
+/// Rejects a directory without a `package.json`; otherwise behaves like a one-repo scan.
+#[tauri::command]
+pub async fn add_repository_manual(
+    state: State<'_, AppState>,
+    project_id: i64,
+    path: String,
+) -> Result<Vec<persistence::Repository>, AppError> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(AppError::Scan(format!("not a directory: {path}")));
+    }
+    let repo = scanner::classify_repo_dir(dir, None)
+        .ok_or_else(|| AppError::Scan(format!("no package.json found in: {path}")))?;
+
+    let default_enabled = repo.detected_script.is_some();
+    persistence::upsert_repository(
+        &state.pool,
+        project_id,
+        &repo.name,
+        &repo.path,
+        repo.package_manager.as_str(),
+        repo.detected_script.as_deref(),
+        default_enabled,
+    )
+    .await
+    .map_err(|e| AppError::Persist(e.to_string()))?;
+
+    persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Recent projects for the Home screen (F1).
 #[tauri::command]
 pub async fn list_recent_projects(

@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  addRepositoryManual,
   applyProfile,
   createProfile,
   deleteProfile,
   executeProject,
+  pickDirectory,
   gitFetch,
   gitPull,
   gitStatusProject,
@@ -82,6 +84,8 @@ export function Project({
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
+  const [addRepoBusy, setAddRepoBusy] = useState(false);
+  const [addRepoError, setAddRepoError] = useState("");
 
   // Fetched fresh on mount (not passed down from App.tsx) so a change made in Settings takes
   // effect the next time this view is opened, without needing an app restart.
@@ -133,6 +137,20 @@ export function Project({
       await loadGitStatus(project!.id);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function addRepositoryManually() {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setAddRepoError("");
+    setAddRepoBusy(true);
+    try {
+      onRepositoriesReplaced(await addRepositoryManual(project!.id, dir));
+    } catch (err) {
+      setAddRepoError(String(err));
+    } finally {
+      setAddRepoBusy(false);
     }
   }
 
@@ -431,8 +449,21 @@ export function Project({
           <button type="button" className="btn btn-secondary" onClick={refresh} disabled={busy}>
             {busy ? "Scanning…" : "Refresh"}
           </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={addRepositoryManually}
+            disabled={addRepoBusy}
+            title="Pick a folder to add as a repository, e.g. one auto-scan didn't find"
+          >
+            {addRepoBusy ? "Adding…" : "Add Repository"}
+          </button>
         </div>
       </div>
+
+      {addRepoError && (
+        <p style={{ color: "var(--color-status-bad-fg)", fontSize: 13, margin: "0 0 16px" }}>{addRepoError}</p>
+      )}
 
       {(executeResult || executeError) && (
         <div style={{ marginBottom: 16, fontSize: 13 }}>

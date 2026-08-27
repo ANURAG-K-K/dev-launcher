@@ -14,6 +14,9 @@ export const openProject = (rootPath: string) =>
 export const scanRepositories = (projectId: number) =>
   invoke<ProjectWithRepos>("scan_repositories", { projectId });
 
+export const addRepositoryManual = (projectId: number, path: string) =>
+  invoke<Repository[]>("add_repository_manual", { projectId, path });
+
 export const gitStatusProject = (projectId: number) =>
   invoke<RepoGitStatus[]>("git_status_project", { projectId });
 
