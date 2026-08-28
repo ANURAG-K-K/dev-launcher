@@ -162,6 +162,34 @@ async fn discover_and_persist(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// For each existing repo, checks whether a `package.json` still exists at the same path
+/// relative to `new_root` as the repo currently has relative to `old_root`. Repos that don't
+/// match (moved away, or the new root has a different layout) are simply absent from the
+/// result — left for the caller (and a normal Refresh) to leave untouched.
+fn compute_repo_remap(
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+    repos: &[persistence::Repository],
+) -> Vec<persistence::RepoRemap> {
+    let mut out = Vec::new();
+    for repo in repos {
+        let repo_path = std::path::Path::new(&repo.path);
+        let Ok(relative) = repo_path.strip_prefix(old_root) else {
+            continue;
+        };
+        let candidate = new_root.join(relative);
+        if let Some(discovered) = scanner::classify_repo_dir(&candidate, Some(&repo.name)) {
+            out.push(persistence::RepoRemap {
+                repository_id: repo.id,
+                path: discovered.path,
+                package_manager: discovered.package_manager.as_str().to_string(),
+                detected_script: discovered.detected_script,
+            });
+        }
+    }
+    out
+}
+
 // ── Dependencies & sequential launch (F7/F8) ───────────────────────────────
 
 /// A dependency edge: `repository_id` depends on `depends_on_repository_id`.
@@ -1809,5 +1837,141 @@ mod project_tests {
         assert!(validate_project_name("").is_err());
         assert!(validate_project_name("   ").is_err());
         assert_eq!(validate_project_name("  My Project  ").unwrap(), "My Project");
+    }
+}
+
+#[cfg(test)]
+mod path_management_tests {
+    use super::*;
+
+    /// Creates a unique temp directory, cleaned up via `Drop`. Local to this module, matching
+    /// the existing per-module temp-dir helper convention already used by `scanner.rs` and this
+    /// file's `git_tests`.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "mrl-path-mgmt-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_pkg_json(dir: &std::path::Path, subpath: &str) {
+        let full = dir.join(subpath);
+        std::fs::create_dir_all(&full).expect("create repo dir");
+        std::fs::write(full.join("package.json"), r#"{"scripts": {"dev": "node ."}}"#)
+            .expect("write package.json");
+    }
+
+    fn fake_repo(id: i64, path: &std::path::Path, name: &str) -> persistence::Repository {
+        persistence::Repository {
+            id,
+            project_id: 1,
+            name: name.to_string(),
+            path: path.to_str().unwrap().to_string(),
+            package_manager: "npm".to_string(),
+            detected_script: None,
+            command: None,
+            args: None,
+            env_file: None,
+            enabled: 1,
+            favorite: 0,
+            visible_console: 0,
+            removed_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn remaps_repo_that_exists_at_the_same_relative_path() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        write_pkg_json(new.path(), "api");
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert_eq!(remap.len(), 1);
+        assert_eq!(remap[0].repository_id, 1);
+        assert_eq!(remap[0].path, new.path().join("api").display().to_string());
+    }
+
+    #[test]
+    fn excludes_repo_whose_new_location_has_no_package_json() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        std::fs::create_dir_all(new.path().join("api")).expect("create dir without package.json");
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert!(remap.is_empty());
+    }
+
+    #[test]
+    fn remaps_nested_relative_paths() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "services/notifications");
+        write_pkg_json(new.path(), "services/notifications");
+
+        let repo = fake_repo(1, &old.path().join("services/notifications"), "services/notifications");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert_eq!(remap.len(), 1);
+        assert_eq!(remap[0].path, new.path().join("services/notifications").display().to_string());
+    }
+
+    #[test]
+    fn handles_multiple_repositories_independently() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        write_pkg_json(old.path(), "web");
+        write_pkg_json(new.path(), "api"); // only "api" exists under the new root
+        std::fs::create_dir_all(new.path().join("web-renamed")).unwrap(); // "web" isn't here
+
+        let repos = vec![
+            fake_repo(1, &old.path().join("api"), "api"),
+            fake_repo(2, &old.path().join("web"), "web"),
+        ];
+        let remap = compute_repo_remap(old.path(), new.path(), &repos);
+
+        assert_eq!(remap.len(), 1, "only api should remap; web has no match under the new root");
+        assert_eq!(remap[0].repository_id, 1);
+    }
+
+    #[test]
+    fn excludes_repo_whose_relative_path_does_not_exist_under_new_root_at_all() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        // new root has nothing under "api" at all, not even an empty directory.
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert!(remap.is_empty());
     }
 }
