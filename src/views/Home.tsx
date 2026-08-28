@@ -90,7 +90,9 @@ export function Home({
     setRowError((prev) => ({ ...prev, [p.id]: "" }));
     setPathBusyId(p.id);
     try {
-      onPathUpdated(await updateProjectPath(p.id, dir));
+      const result = await updateProjectPath(p.id, dir);
+      setRecent((prev) => prev.map((x) => (x.id === result.project.id ? result.project : x)));
+      onPathUpdated(result);
     } catch (err) {
       setRowError((prev) => ({ ...prev, [p.id]: String(err) }));
     } finally {
@@ -106,6 +108,7 @@ export function Home({
     setDeleteBusyId(p.id);
     try {
       await deleteProject(p.id);
+      setRecent((prev) => prev.filter((x) => x.id !== p.id));
       onDeleted(p.id);
     } catch (err) {
       setRowError((prev) => ({ ...prev, [p.id]: String(err) }));

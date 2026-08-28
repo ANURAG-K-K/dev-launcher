@@ -198,6 +198,11 @@ pub async fn update_repository_path(
     repository_id: i64,
     new_path: String,
 ) -> Result<persistence::Repository, AppError> {
+    persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("repository {repository_id} not found")))?;
+
     let dir = std::path::Path::new(&new_path);
     if !dir.is_dir() {
         return Err(AppError::Scan(format!("not a directory: {new_path}")));
@@ -266,6 +271,12 @@ async fn discover_and_persist(
 /// relative to `new_root` as the repo currently has relative to `old_root`. Repos that don't
 /// match (moved away, or the new root has a different layout) are simply absent from the
 /// result — left for the caller (and a normal Refresh) to leave untouched.
+///
+/// Caveat on Windows: `strip_prefix` does exact component comparison (case-sensitive apart from
+/// the drive letter), so if `old_root`/`new_root` ever differ from a repo's stored path in case
+/// or short-vs-long (8.3) form, that repo will silently fail to match and be excluded — which,
+/// combined with the subsequent full rescan, produces duplicate repo rows at the new location
+/// rather than a clean no-op.
 fn compute_repo_remap(
     old_root: &std::path::Path,
     new_root: &std::path::Path,
@@ -2103,8 +2114,10 @@ mod path_management_tests {
         let new_root = TempDir::new();
 
         write_pkg_json(old_root.path(), "api");
+        write_pkg_json(old_root.path(), "worker");
         write_pkg_json(new_root.path(), "api"); // same relative path -> should remap
         write_pkg_json(new_root.path(), "web"); // brand new under the new root -> picked up by scan
+        // note: no "worker" dir under new_root -> that repo can't remap and must be left untouched
 
         let project = persistence::upsert_project(&pool, "Proj", old_root.path().to_str().unwrap())
             .await
@@ -2116,6 +2129,10 @@ mod path_management_tests {
         persistence::update_repository_config(&pool, repo.id, "npm", Some("npm run custom"), None, None)
             .await
             .expect("set command override failed");
+        let old_worker_path = old_root.path().join("worker").to_str().unwrap().to_string();
+        let worker_repo = persistence::upsert_repository(&pool, project.id, "worker", &old_worker_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert worker repository failed");
 
         // Mirrors update_project_path's body, bypassing the Tauri command wrapper (which needs a
         // real AppHandle/AppState) -- same approach this file's existing git_tests already use.
@@ -2135,6 +2152,16 @@ mod path_management_tests {
 
         let web = repositories.iter().find(|r| r.name == "web");
         assert!(web.is_some(), "brand-new repo under the new root must be picked up by the scan");
+
+        let worker = repositories
+            .iter()
+            .find(|r| r.name == "worker")
+            .expect("worker must still be present (never auto-removed)");
+        assert_eq!(worker.id, worker_repo.id, "untouched repo must keep its original id");
+        assert_eq!(
+            worker.path, old_worker_path,
+            "repo that couldn't remap must be left at its old path, unchanged"
+        );
 
         pool.close().await;
         cleanup_db(&db_path);
