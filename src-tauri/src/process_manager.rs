@@ -140,6 +140,17 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// Whether a repository is currently running or starting, per the live tracker (not the
+    /// database). Used by `delete_project` to guard against deleting a project out from under a
+    /// process still writing to it.
+    pub fn is_running(&self, repo_id: i64) -> bool {
+        let map = self.procs.lock().unwrap();
+        matches!(
+            map.get(&repo_id).map(|t| t.status),
+            Some(ProcStatus::Running | ProcStatus::Starting)
+        )
+    }
+
     /// Stop then re-spawn, incrementing the restart count.
     pub async fn restart(&self, repo_id: i64) -> Result<StatusUpdate, String> {
         let spec = {
