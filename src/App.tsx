@@ -174,6 +174,23 @@ function App() {
     refreshRecent();
   }
 
+  function applyPathUpdate(result: ProjectWithRepos) {
+    setRecentProjects((prev) => prev.map((p) => (p.id === result.project.id ? result.project : p)));
+    if (project?.id === result.project.id) {
+      setProject(result.project);
+      setRepositories(result.repositories);
+    }
+  }
+
+  function applyProjectDeleted(projectId: number) {
+    setRecentProjects((prev) => prev.filter((p) => p.id !== projectId));
+    if (project?.id === projectId) {
+      setProject(null);
+      setRepositories([]);
+      setView("home");
+    }
+  }
+
   async function refreshRecent() {
     try {
       setRecentProjects(await listRecentProjects());
@@ -448,6 +465,8 @@ function App() {
               setRecentProjects((prev) => prev.map((p) => (p.id === u.id ? u : p)));
               if (project?.id === u.id) setProject(u);
             }}
+            onPathUpdated={applyPathUpdate}
+            onDeleted={applyProjectDeleted}
           />
         )}
         {view === "project" && (
