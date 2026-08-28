@@ -115,3 +115,12 @@ export const getSettings = () => invoke<Settings>("get_settings");
 
 export const updateSettings = (settings: Settings) =>
   invoke<Settings>("update_settings", { settings });
+
+export const deleteProject = (projectId: number) =>
+  invoke<void>("delete_project", { projectId });
+
+export const updateProjectPath = (projectId: number, newRootPath: string) =>
+  invoke<ProjectWithRepos>("update_project_path", { projectId, newRootPath });
+
+export const updateRepositoryPath = (repositoryId: number, newPath: string) =>
+  invoke<Repository>("update_repository_path", { repositoryId, newPath });
