@@ -73,6 +73,7 @@ pub fn run() {
             commands::delete_project,
             commands::update_project_path,
             commands::add_repository_manual,
+            commands::update_repository_path,
             commands::list_recent_projects,
             commands::get_settings,
             commands::update_settings,

@@ -188,6 +188,41 @@ pub async fn add_repository_manual(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Repoints a single repository at a new folder. Rejects outright if the folder has no
+/// `package.json` (no "save with a warning" path). Name is taken from the new folder (kept in
+/// sync with what it points to, matching how auto-scan already names repos); package manager and
+/// detected script are refreshed; every user override on the row is left untouched.
+#[tauri::command]
+pub async fn update_repository_path(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    new_path: String,
+) -> Result<persistence::Repository, AppError> {
+    let dir = std::path::Path::new(&new_path);
+    if !dir.is_dir() {
+        return Err(AppError::Scan(format!("not a directory: {new_path}")));
+    }
+    let discovered = scanner::classify_repo_dir(dir, None)
+        .ok_or_else(|| AppError::Scan(format!("no package.json found in: {new_path}")))?;
+
+    persistence::update_repository_path(
+        &state.pool,
+        repository_id,
+        &discovered.path,
+        &discovered.name,
+        discovered.package_manager.as_str(),
+        discovered.detected_script.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+            AppError::Persist("another repository in this project already uses this path".into())
+        } else {
+            AppError::Persist(e.to_string())
+        }
+    })
+}
+
 /// Recent projects for the Home screen (F1).
 #[tauri::command]
 pub async fn list_recent_projects(
@@ -2100,6 +2135,52 @@ mod path_management_tests {
 
         let web = repositories.iter().find(|r| r.name == "web");
         assert!(web.is_some(), "brand-new repo under the new root must be picked up by the scan");
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_command_rejects_missing_package_json_and_succeeds_otherwise() {
+        let (pool, db_path) = setup_test_db().await;
+        let old_dir = TempDir::new();
+        let new_dir = TempDir::new();
+        write_pkg_json(old_dir.path(), "api");
+
+        let project = persistence::upsert_project(&pool, "Proj", old_dir.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let old_api_path = old_dir.path().join("api").to_str().unwrap().to_string();
+        let repo = persistence::upsert_repository(&pool, project.id, "api", &old_api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        // No package.json here -> classify_repo_dir returns None -> the command must reject.
+        let empty_target = new_dir.path().join("empty");
+        std::fs::create_dir_all(&empty_target).unwrap();
+        assert!(
+            scanner::classify_repo_dir(&empty_target, None).is_none(),
+            "sanity check: this fixture must have no package.json"
+        );
+
+        // Valid target with a different leaf name -> name must update to match (mirrors what
+        // the update_repository_path command does internally: classify, then persist).
+        write_pkg_json(new_dir.path(), "billing");
+        let target = new_dir.path().join("billing");
+        let discovered = scanner::classify_repo_dir(&target, None).expect("target must classify as a repo");
+        let updated = persistence::update_repository_path(
+            &pool,
+            repo.id,
+            &discovered.path,
+            &discovered.name,
+            discovered.package_manager.as_str(),
+            discovered.detected_script.as_deref(),
+        )
+        .await
+        .expect("update_repository_path failed");
+
+        assert_eq!(updated.name, "billing", "name must follow the new folder");
+        assert_eq!(updated.path, target.display().to_string());
 
         pool.close().await;
         cleanup_db(&db_path);
