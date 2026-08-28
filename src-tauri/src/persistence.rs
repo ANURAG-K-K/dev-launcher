@@ -731,6 +731,38 @@ pub async fn set_repository_enabled(
         .await
 }
 
+/// Updates a repository's location and refreshed detection fields (path/name/package
+/// manager/detected script). Deliberately leaves `command`, `args`, `env_file`, `enabled`,
+/// `favorite`, and `visible_console` untouched — same "preserve user overrides" contract
+/// `upsert_repository` already documents.
+pub async fn update_repository_path(
+    pool: &SqlitePool,
+    id: i64,
+    new_path: &str,
+    new_name: &str,
+    package_manager: &str,
+    detected_script: Option<&str>,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE repositories
+         SET path = ?, name = ?, package_manager = ?, detected_script = ?, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(new_path)
+    .bind(new_name)
+    .bind(package_manager)
+    .bind(detected_script)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,6 +1094,78 @@ mod tests {
             .expect("get b failed")
             .expect("b must still exist");
         assert_eq!(b_after.root_path, "/repos/b", "b's root_path must be unchanged after the rejected update");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_refreshes_detection_but_preserves_user_overrides() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        update_repository_config(&pool, repo.id, "pnpm", Some("pnpm run custom"), Some("--flag"), Some(".env.local"))
+            .await
+            .expect("update_repository_config failed");
+        set_repository_favorite(&pool, repo.id, true).await.expect("set favorite failed");
+
+        let updated = update_repository_path(
+            &pool,
+            repo.id,
+            "/repos/proj/api-renamed",
+            "api-renamed",
+            "yarn",
+            Some("start:dev"),
+        )
+        .await
+        .expect("update_repository_path failed");
+
+        assert_eq!(updated.path, "/repos/proj/api-renamed");
+        assert_eq!(updated.name, "api-renamed");
+        assert_eq!(updated.package_manager, "yarn");
+        assert_eq!(updated.detected_script.as_deref(), Some("start:dev"));
+
+        assert_eq!(updated.command.as_deref(), Some("pnpm run custom"), "command override must survive a path change");
+        assert_eq!(updated.args.as_deref(), Some("--flag"), "args override must survive a path change");
+        assert_eq!(updated.env_file.as_deref(), Some(".env.local"), "env_file override must survive a path change");
+        assert_eq!(updated.enabled, 1, "enabled must survive a path change");
+        assert_eq!(updated.favorite, 1, "favorite must survive a path change");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_rejects_path_already_used_by_another_repo_in_same_project() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo_a = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo a failed");
+        let repo_b = upsert_repository(&pool, project.id, "web", "/repos/proj/web", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo b failed");
+
+        // Point web at api's existing path -> must violate the (project_id, path) UNIQUE constraint.
+        let conflict = update_repository_path(&pool, repo_b.id, "/repos/proj/api", "api", "npm", Some("dev")).await;
+        assert!(conflict.is_err(), "pointing repo b at repo a's path must be rejected");
+
+        let b_after = get_repository(&pool, repo_b.id)
+            .await
+            .expect("get repo b failed")
+            .expect("repo b must still exist");
+        assert_eq!(b_after.path, "/repos/proj/web", "repo b's path must be unchanged after the rejected update");
+
+        let a_after = get_repository(&pool, repo_a.id)
+            .await
+            .expect("get repo a failed")
+            .expect("repo a must still exist");
+        assert_eq!(a_after.path, "/repos/proj/api", "repo a must be completely unaffected");
 
         pool.close().await;
         cleanup(&path);
