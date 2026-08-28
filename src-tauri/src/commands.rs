@@ -89,6 +89,26 @@ pub async fn scan_repositories(
     })
 }
 
+/// Deletes a project and everything under it (repositories, dependencies, profiles, launch
+/// history — all via existing ON DELETE CASCADE foreign keys). Rejects the deletion if any of
+/// the project's repositories are currently running or starting, checked against the live
+/// process tracker rather than only the database, so a stale frontend status cache can't lead
+/// to an orphaned OS process.
+#[tauri::command]
+pub async fn delete_project(state: State<'_, AppState>, project_id: i64) -> Result<(), AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    if repos.iter().any(|r| state.process_manager.is_running(r.id)) {
+        return Err(AppError::Persist(
+            "stop all repositories in this project before deleting".into(),
+        ));
+    }
+    persistence::delete_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
 /// Manually adds a single repository by path, for cases the auto-scan doesn't reach (feedback
 /// #8: nested repos more than one level deep, or any other layout the heuristic misses).
 /// Rejects a directory without a `package.json`; otherwise behaves like a one-repo scan.
