@@ -52,6 +52,15 @@ pub struct Repository {
 // Note: FromRow maps by the Rust field name to the DB column (both snake_case) — the serde
 // rename_all="camelCase" only affects JSON serialization to the frontend, not FromRow.
 
+/// One repository's refreshed location/detection after a project root move, ready to persist.
+/// Produced by `compute_repo_remap` in `commands.rs`.
+pub struct RepoRemap {
+    pub repository_id: i64,
+    pub path: String,
+    pub package_manager: String,
+    pub detected_script: Option<String>,
+}
+
 /// Open (creating if missing) the SQLite pool with WAL journal mode and foreign keys enabled.
 pub async fn init_pool(db_path: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
     if let Some(parent) = db_path.parent() {
@@ -763,6 +772,38 @@ pub async fn update_repository_path(
         .await
 }
 
+/// Atomically applies a computed remap and repoints the project at `new_root_path`: either both
+/// the repo updates and the root_path change land together, or (on any failure, e.g. a
+/// UNIQUE(root_path) conflict) neither does.
+pub async fn apply_project_remap(
+    pool: &SqlitePool,
+    project_id: i64,
+    new_root_path: &str,
+    remap: &[RepoRemap],
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+    for r in remap {
+        sqlx::query(
+            "UPDATE repositories SET path = ?, package_manager = ?, detected_script = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&r.path)
+        .bind(&r.package_manager)
+        .bind(r.detected_script.as_deref())
+        .bind(&now)
+        .bind(r.repository_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?")
+        .bind(new_root_path)
+        .bind(&now)
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1166,6 +1207,40 @@ mod tests {
             .expect("get repo a failed")
             .expect("repo a must still exist");
         assert_eq!(a_after.path, "/repos/proj/api", "repo a must be completely unaffected");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn apply_project_remap_rolls_back_everything_on_conflict() {
+        let (pool, path) = setup_test_db().await;
+
+        let a = upsert_project(&pool, "A", "/repos/a").await.expect("upsert a failed");
+        let _b = upsert_project(&pool, "B", "/repos/b").await.expect("upsert b failed");
+        let repo = upsert_repository(&pool, a.id, "api", "/repos/a/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        let remap = vec![RepoRemap {
+            repository_id: repo.id,
+            path: "/repos/a-moved/api".to_string(),
+            package_manager: "yarn".to_string(),
+            detected_script: Some("start:dev".to_string()),
+        }];
+
+        // "/repos/b" is already taken by project B, so the root_path UPDATE inside the transaction
+        // must fail on the UNIQUE constraint -- after the repo row's UPDATE already ran earlier in
+        // the same transaction. This is the real failure path the atomicity guarantee protects.
+        let result = apply_project_remap(&pool, a.id, "/repos/b", &remap).await;
+        assert!(result.is_err(), "conflicting root_path must fail");
+
+        let a_after = get_project(&pool, a.id).await.expect("get a failed").expect("a must still exist");
+        assert_eq!(a_after.root_path, "/repos/a", "project root_path must be unchanged after rollback");
+
+        let repo_after = get_repository(&pool, repo.id).await.expect("get repo failed").expect("repo must still exist");
+        assert_eq!(repo_after.path, "/repos/a/api", "repo path must be unchanged after rollback");
+        assert_eq!(repo_after.package_manager, "npm", "repo package_manager must be unchanged after rollback");
 
         pool.close().await;
         cleanup(&path);
