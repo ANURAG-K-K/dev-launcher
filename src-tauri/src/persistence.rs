@@ -124,6 +124,17 @@ pub async fn rename_project(pool: &SqlitePool, id: i64, name: &str) -> Result<Pr
         .await
 }
 
+/// Deletes a project. `ON DELETE CASCADE` on every project-scoped foreign key
+/// (`repositories`, `profiles`, `launch_history`, and transitively `repository_dependencies`,
+/// `profile_repositories`, `launch_history_items`) removes everything under it automatically.
+pub async fn delete_project(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Recent projects ordered by `last_opened_at` DESC.
 pub async fn list_recent_projects(
     pool: &SqlitePool,
@@ -950,5 +961,63 @@ mod tests {
             reopened.name, "My Custom Name",
             "a rename must survive reopening the project — this is the bug this task fixes"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascades_to_repositories_profiles_and_launch_history() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Cascade Test", "/repos/cascade")
+            .await
+            .expect("upsert project failed");
+
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/cascade/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        let profile_id = create_profile(&pool, project.id, "Everything", 1000)
+            .await
+            .expect("create profile failed");
+        set_profile_members(&pool, profile_id, &[repo.id])
+            .await
+            .expect("set profile members failed");
+
+        let history_id = insert_launch_history(&pool, project.id, Some(profile_id))
+            .await
+            .expect("insert launch history failed");
+        insert_launch_history_item(&pool, history_id, repo.id, None, "running")
+            .await
+            .expect("insert launch history item failed");
+
+        delete_project(&pool, project.id).await.expect("delete_project failed");
+
+        let repo_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repositories WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count repositories failed");
+        let profile_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count profiles failed");
+        let history_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM launch_history WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count launch_history failed");
+        let project_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count projects failed");
+
+        assert_eq!(repo_count, 0, "repositories must cascade-delete");
+        assert_eq!(profile_count, 0, "profiles must cascade-delete");
+        assert_eq!(history_count, 0, "launch_history must cascade-delete");
+        assert_eq!(project_count, 0, "project itself must be deleted");
+
+        pool.close().await;
+        cleanup(&path);
     }
 }
