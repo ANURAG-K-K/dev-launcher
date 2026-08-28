@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import { setRepositoryDependencies, updateRepositoryConfig } from "@/api";
+import { pickDirectory, setRepositoryDependencies, updateRepositoryConfig, updateRepositoryPath } from "@/api";
 import type { DependencyEdge, Repository } from "@/types";
 
 const INPUT_STYLE: CSSProperties = {
@@ -61,11 +61,33 @@ export function RepoEditDialog({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [path, setPath] = useState(repo.path);
+  const [name, setName] = useState(repo.name);
+  const [pathBusy, setPathBusy] = useState(false);
+  const [pathError, setPathError] = useState("");
 
   const otherRepos = repositories.filter((r) => r.id !== repo.id);
 
   function toggleDependsOn(id: number, checked: boolean) {
     setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
+  }
+
+  async function browsePath() {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setPathError("");
+    setPathBusy(true);
+    try {
+      const updated = await updateRepositoryPath(repo.id, dir);
+      setPath(updated.path);
+      setName(updated.name);
+      setPackageManager(updated.packageManager);
+      onRepoUpdated(updated);
+    } catch (err) {
+      setPathError(String(err));
+    } finally {
+      setPathBusy(false);
+    }
   }
 
   async function save() {
@@ -108,7 +130,24 @@ export function RepoEditDialog({
         style={{ width: "100%", maxWidth: 480, background: "var(--color-bg)", padding: 24 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 18 }}>Edit — {repo.name}</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 18 }}>Edit — {name}</h2>
+
+        <Field label="Path" helper="Folder this repository launches from.">
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span
+              className="mono text-muted"
+              style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
+            >
+              {path}
+            </span>
+            <button type="button" className="btn btn-secondary" onClick={browsePath} disabled={pathBusy}>
+              {pathBusy ? "Checking…" : "Browse…"}
+            </button>
+          </div>
+          {pathError && (
+            <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 4 }}>{pathError}</div>
+          )}
+        </Field>
 
         <Field label="Package manager">
           <select
