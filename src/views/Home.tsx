@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { listRecentProjects, openProject, pickDirectory, renameProject } from "@/api";
+import { deleteProject, listRecentProjects, openProject, pickDirectory, renameProject, updateProjectPath } from "@/api";
 import type { Project, ProjectWithRepos } from "@/types";
 import { IconButton } from "@/components/IconButton";
 
@@ -7,9 +7,13 @@ import { IconButton } from "@/components/IconButton";
 export function Home({
   onOpened,
   onRenamed,
+  onPathUpdated,
+  onDeleted,
 }: {
   onOpened: (result: ProjectWithRepos) => void;
   onRenamed?: (project: Project) => void;
+  onPathUpdated: (result: ProjectWithRepos) => void;
+  onDeleted: (projectId: number) => void;
 }) {
   const [recent, setRecent] = useState<Project[]>([]);
   const [busy, setBusy] = useState(false);
@@ -18,6 +22,9 @@ export function Home({
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState("");
   const renameCancelledRef = useRef(false);
+  const [pathBusyId, setPathBusyId] = useState<number | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<number | null>(null);
+  const [rowError, setRowError] = useState<Record<number, string>>({});
 
   useEffect(() => {
     listRecentProjects().then(setRecent).catch((e) => setError(String(e)));
@@ -75,6 +82,36 @@ export function Home({
   async function chooseFolder() {
     const dir = await pickDirectory();
     if (dir) await open(dir);
+  }
+
+  async function editPath(p: Project) {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setRowError((prev) => ({ ...prev, [p.id]: "" }));
+    setPathBusyId(p.id);
+    try {
+      onPathUpdated(await updateProjectPath(p.id, dir));
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, [p.id]: String(err) }));
+    } finally {
+      setPathBusyId(null);
+    }
+  }
+
+  async function deleteProjectRow(p: Project) {
+    if (!confirm(`Delete project "${p.name}"? This removes it and all its repository configuration permanently.`)) {
+      return;
+    }
+    setRowError((prev) => ({ ...prev, [p.id]: "" }));
+    setDeleteBusyId(p.id);
+    try {
+      await deleteProject(p.id);
+      onDeleted(p.id);
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, [p.id]: String(err) }));
+    } finally {
+      setDeleteBusyId(null);
+    }
   }
 
   return (
@@ -151,11 +188,37 @@ export function Home({
                     </span>
                   )}
                 </td>
-                <td className="mono text-muted" style={{ fontSize: 12 }}>{p.rootPath}</td>
+                <td className="mono text-muted" style={{ fontSize: 12 }}>
+                  {p.rootPath}
+                  {rowError[p.id] && (
+                    <div style={{ color: "var(--color-status-bad-fg)", fontSize: 11, marginTop: 4 }}>
+                      {rowError[p.id]}
+                    </div>
+                  )}
+                </td>
                 <td style={{ textAlign: "right" }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => open(p.rootPath)} disabled={busy}>
-                    Open
-                  </button>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <IconButton
+                      title="Change project folder"
+                      onClick={() => editPath(p)}
+                      disabled={pathBusyId === p.id || deleteBusyId === p.id}
+                    >
+                      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                    </IconButton>
+                    <IconButton
+                      title="Delete project"
+                      color="var(--color-status-bad-fg)"
+                      onClick={() => deleteProjectRow(p)}
+                      disabled={pathBusyId === p.id || deleteBusyId === p.id}
+                    >
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    </IconButton>
+                    <button type="button" className="btn btn-secondary" onClick={() => open(p.rootPath)} disabled={busy}>
+                      Open
+                    </button>
+                  </span>
                 </td>
               </tr>
             ))}
