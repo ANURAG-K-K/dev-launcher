@@ -135,6 +135,27 @@ pub async fn delete_project(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+/// Updates a project's root folder. `root_path` is `UNIQUE`; pointing it at a path another
+/// project already uses returns a constraint-violation error (translated to a friendly message
+/// by the command layer).
+pub async fn update_project_root_path(
+    pool: &SqlitePool,
+    id: i64,
+    new_root_path: &str,
+) -> Result<Project, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?")
+        .bind(new_root_path)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 /// Recent projects ordered by `last_opened_at` DESC.
 pub async fn list_recent_projects(
     pool: &SqlitePool,
@@ -1016,6 +1037,31 @@ mod tests {
         assert_eq!(profile_count, 0, "profiles must cascade-delete");
         assert_eq!(history_count, 0, "launch_history must cascade-delete");
         assert_eq!(project_count, 0, "project itself must be deleted");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn update_project_root_path_updates_field_and_rejects_duplicate() {
+        let (pool, path) = setup_test_db().await;
+
+        let a = upsert_project(&pool, "A", "/repos/a").await.expect("upsert a failed");
+        let b = upsert_project(&pool, "B", "/repos/b").await.expect("upsert b failed");
+
+        let updated = update_project_root_path(&pool, a.id, "/repos/a-moved")
+            .await
+            .expect("update should succeed");
+        assert_eq!(updated.root_path, "/repos/a-moved");
+
+        let conflict = update_project_root_path(&pool, b.id, "/repos/a-moved").await;
+        assert!(conflict.is_err(), "pointing b at a's new path must be rejected");
+
+        let b_after = get_project(&pool, b.id)
+            .await
+            .expect("get b failed")
+            .expect("b must still exist");
+        assert_eq!(b_after.root_path, "/repos/b", "b's root_path must be unchanged after the rejected update");
 
         pool.close().await;
         cleanup(&path);
