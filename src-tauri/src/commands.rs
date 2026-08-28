@@ -109,6 +109,51 @@ pub async fn delete_project(state: State<'_, AppState>, project_id: i64) -> Resu
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Repoints a project at a new root folder. Any repository that still exists at the same
+/// relative path under the new root is updated in place (id + user overrides preserved);
+/// anything else is picked up by the normal scan that follows. `root_path` and any remapped
+/// repos land together in one transaction (`apply_project_remap`), so a mid-failure never leaves
+/// them pointing at different locations.
+#[tauri::command]
+pub async fn update_project_path(
+    state: State<'_, AppState>,
+    project_id: i64,
+    new_root_path: String,
+) -> Result<ProjectWithRepos, AppError> {
+    let new_root = std::path::Path::new(&new_root_path);
+    if !new_root.is_dir() {
+        return Err(AppError::Scan(format!("not a directory: {new_root_path}")));
+    }
+
+    let project = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("project {project_id} not found")))?;
+    let old_root = std::path::Path::new(&project.root_path);
+
+    let existing = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let remap = compute_repo_remap(old_root, new_root, &existing);
+
+    persistence::apply_project_remap(&state.pool, project_id, &new_root_path, &remap)
+        .await
+        .map_err(|e| {
+            if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+                AppError::Persist("another project already uses this path".into())
+            } else {
+                AppError::Persist(e.to_string())
+            }
+        })?;
+
+    let repositories = discover_and_persist(&state.pool, project_id, new_root).await?;
+    let project = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("project {project_id} not found")))?;
+    Ok(ProjectWithRepos { project, repositories })
+}
+
 /// Manually adds a single repository by path, for cases the auto-scan doesn't reach (feedback
 /// #8: nested repos more than one level deep, or any other layout the heuristic misses).
 /// Rejects a directory without a `package.json`; otherwise behaves like a one-repo scan.
@@ -1993,5 +2038,70 @@ mod path_management_tests {
         let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
 
         assert!(remap.is_empty());
+    }
+
+    /// Create a fresh temp SQLite DB, migrated and ready to use. Mirrors persistence.rs's own
+    /// test helper — duplicated locally since that one is private to persistence.rs's test
+    /// module, matching this codebase's existing convention of small per-module test helpers.
+    async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let unique = format!(
+            "mrl_cmd_test_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let db_path = std::env::temp_dir().join(unique);
+        let pool = persistence::init_pool(&db_path).await.expect("init_pool failed");
+        persistence::run_migrations(&pool).await.expect("run_migrations failed");
+        (pool, db_path)
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[tokio::test]
+    async fn update_project_path_remaps_existing_and_picks_up_new_repos() {
+        let (pool, db_path) = setup_test_db().await;
+        let old_root = TempDir::new();
+        let new_root = TempDir::new();
+
+        write_pkg_json(old_root.path(), "api");
+        write_pkg_json(new_root.path(), "api"); // same relative path -> should remap
+        write_pkg_json(new_root.path(), "web"); // brand new under the new root -> picked up by scan
+
+        let project = persistence::upsert_project(&pool, "Proj", old_root.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let old_api_path = old_root.path().join("api").to_str().unwrap().to_string();
+        let repo = persistence::upsert_repository(&pool, project.id, "api", &old_api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+        persistence::update_repository_config(&pool, repo.id, "npm", Some("npm run custom"), None, None)
+            .await
+            .expect("set command override failed");
+
+        // Mirrors update_project_path's body, bypassing the Tauri command wrapper (which needs a
+        // real AppHandle/AppState) -- same approach this file's existing git_tests already use.
+        let existing = persistence::list_repositories(&pool, project.id).await.expect("list failed");
+        let remap = compute_repo_remap(old_root.path(), new_root.path(), &existing);
+        persistence::apply_project_remap(&pool, project.id, new_root.path().to_str().unwrap(), &remap)
+            .await
+            .expect("apply_project_remap failed");
+        let repositories = discover_and_persist(&pool, project.id, new_root.path())
+            .await
+            .expect("discover_and_persist failed");
+
+        let api = repositories.iter().find(|r| r.name == "api").expect("api must still be present");
+        assert_eq!(api.id, repo.id, "remapped repo must keep its original id");
+        assert_eq!(api.path, new_root.path().join("api").display().to_string());
+        assert_eq!(api.command.as_deref(), Some("npm run custom"), "override must survive the move");
+
+        let web = repositories.iter().find(|r| r.name == "web");
+        assert!(web.is_some(), "brand-new repo under the new root must be picked up by the scan");
+
+        pool.close().await;
+        cleanup_db(&db_path);
     }
 }
