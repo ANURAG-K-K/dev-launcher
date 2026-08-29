@@ -19,6 +19,8 @@ All notable changes to this project. Mirrors the in-app "What's new" dialog
 - Launch button now reads "Launch Project" only when every service is enabled, "Launch" otherwise
 - Documented and verified monorepo compatibility: multiple services can share one git repository
 - "Open Terminal" reuses one Windows Terminal window as tabs, when Windows Terminal is installed
+- Filter box for the services table (Project view) and the sidebar's Recent Projects list
+- Sidebar shows a green dot on a project with services still running in the background
 
 ## 2026-08-03
 - Inline project rename
