@@ -122,6 +122,9 @@ export const updateSettings = (settings: Settings) =>
 export const deleteProject = (projectId: number) =>
   invoke<void>("delete_project", { projectId });
 
+export const projectRunningCounts = (projectIds: number[]) =>
+  invoke<Record<number, number>>("project_running_counts", { projectIds });
+
 export const updateProjectPath = (projectId: number, newRootPath: string) =>
   invoke<ProjectWithRepos>("update_project_path", { projectId, newRootPath });
 

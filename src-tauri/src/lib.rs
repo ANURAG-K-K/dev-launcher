@@ -72,6 +72,7 @@ pub fn run() {
             commands::scan_repositories,
             commands::refresh_repositories,
             commands::delete_project,
+            commands::project_running_counts,
             commands::update_project_path,
             commands::add_repository_manual,
             commands::update_repository_path,

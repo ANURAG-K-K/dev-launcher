@@ -93,6 +93,7 @@ export function Project({
   const [rootMissing, setRootMissing] = useState(false);
   const [locateBusy, setLocateBusy] = useState(false);
   const [locateError, setLocateError] = useState("");
+  const [serviceFilter, setServiceFilter] = useState("");
 
   // Fetched fresh on mount (not passed down from App.tsx) so a change made in Settings takes
   // effect the next time this view is opened, without needing an app restart.
@@ -136,9 +137,10 @@ export function Project({
   // else is caught the moment the user comes back, not only after a manual click.
   useEffect(() => {
     // Clear synchronously on project switch so the previous project's stale-folder banner/badges
-    // can't flash against the newly-opened project while the fresh check is still in flight.
+    // (and its service-name filter) can't carry over against the newly-opened project.
     setRootMissing(false);
     setMissingRepoIds([]);
+    setServiceFilter("");
     if (project) void refreshRepos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
@@ -351,6 +353,9 @@ export function Project({
   const sortedRepos = [...repositories].sort(
     (a, b) => b.favorite - a.favorite || a.name.localeCompare(b.name),
   );
+  const filteredRepos = serviceFilter.trim()
+    ? sortedRepos.filter((r) => r.name.toLowerCase().includes(serviceFilter.trim().toLowerCase()))
+    : sortedRepos;
 
   async function toggleFavorite(repo: Repository) {
     try {
@@ -499,6 +504,23 @@ export function Project({
             {repositories.length} {repositories.length === 1 ? "service" : "services"} discovered
           </p>
           {runningCount > 0 && <span className="tag tag-good">● {runningCount} running</span>}
+          {repositories.length > 0 && (
+            <input
+              type="text"
+              placeholder="Filter services…"
+              value={serviceFilter}
+              onChange={(e) => setServiceFilter(e.target.value)}
+              style={{
+                fontSize: 12.5,
+                padding: "5px 10px",
+                minWidth: 160,
+                border: "1px solid var(--color-divider)",
+                background: "var(--color-bg)",
+                borderRadius: "var(--radius-md)",
+                color: "var(--color-text)",
+              }}
+            />
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }} className="text-muted">
@@ -582,6 +604,8 @@ export function Project({
 
       {repositories.length === 0 ? (
         <p className="text-muted">No services with a package.json found under this root.</p>
+      ) : filteredRepos.length === 0 ? (
+        <p className="text-muted">No services match "{serviceFilter}".</p>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table className="table" style={{ minWidth: 640 }}>
@@ -598,7 +622,7 @@ export function Project({
               </tr>
             </thead>
             <tbody>
-              {sortedRepos.map((r) => {
+              {filteredRepos.map((r) => {
                 const repoStatus = statuses[r.id];
                 const status = repoStatus?.status ?? "stopped";
                 const missing = missingRepoIds.includes(r.id);
