@@ -351,6 +351,11 @@ function App() {
     })();
   }, []);
 
+  const currentProjectRunningCount = repositories.filter((r) => {
+    const s = statuses[r.id]?.status;
+    return s === "running" || s === "starting";
+  }).length;
+
   const filteredRecent = sidebarFilter.trim()
     ? recentProjects.filter((p) => p.name.toLowerCase().includes(sidebarFilter.trim().toLowerCase()))
     : recentProjects;
@@ -385,17 +390,22 @@ function App() {
           {NAV.map((n) => {
             const disabled = (n.id === "project" || n.id === "history") && !project;
             const label = n.id === "project" && project ? `Project [${project.name}]` : n.label;
+            const showRunningDot = n.id === "project" && project && currentProjectRunningCount > 0;
             return (
               <button
                 key={n.id}
                 onClick={() => setView(n.id)}
                 disabled={disabled}
+                title={showRunningDot ? `${currentProjectRunningCount} running` : undefined}
                 className={cn("navitem", view === n.id && "navitem-active")}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   {n.icon}
                 </svg>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                {showRunningDot && (
+                  <span style={{ color: "var(--color-status-good-fg)", marginLeft: "auto", flex: "none" }}>●</span>
+                )}
               </button>
             );
           })}
