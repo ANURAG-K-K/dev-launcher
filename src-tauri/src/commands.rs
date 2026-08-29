@@ -1422,6 +1422,151 @@ pub async fn apply_profile(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// On-disk shape of an exported profile. Members are referenced by service *name*, not
+/// database id - ids are meaningless on a different machine/database, but names are stable
+/// across a re-scan of the same project on another machine (or by a teammate).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportedProfile {
+    name: String,
+    launch_delay_ms: i64,
+    /// Service names, in launch order.
+    members: Vec<String>,
+}
+
+/// Writes a profile to `file_path` as JSON, for sharing across machines/teammates (feedback:
+/// export/import launch profiles). A plain `&SqlitePool` function (not `State<AppState>`) since
+/// it never touches the process manager - this makes it directly unit-testable, unlike commands
+/// that need a real `AppHandle`.
+async fn export_profile_impl(
+    pool: &sqlx::SqlitePool,
+    profile_id: i64,
+    file_path: &str,
+) -> Result<(), AppError> {
+    let row = persistence::get_profile(pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist("profile not found".into()))?;
+    let member_ids = persistence::list_profile_members(pool, profile_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+
+    let mut members = Vec::with_capacity(member_ids.len());
+    for id in member_ids {
+        if let Some(repo) = persistence::get_repository(pool, id)
+            .await
+            .map_err(|e| AppError::Persist(e.to_string()))?
+        {
+            members.push(repo.name);
+        }
+    }
+
+    let exported = ExportedProfile {
+        name: row.name,
+        launch_delay_ms: row.launch_delay_ms,
+        members,
+    };
+    let json = serde_json::to_string_pretty(&exported)
+        .map_err(|e| AppError::Persist(format!("failed to serialize profile: {e}")))?;
+    std::fs::write(file_path, json)
+        .map_err(|e| AppError::Persist(format!("failed to write {file_path}: {e}")))?;
+    Ok(())
+}
+
+/// Writes a profile to `file_path` as JSON, for sharing across machines/teammates (feedback:
+/// export/import launch profiles).
+#[tauri::command]
+pub async fn export_profile(
+    state: State<'_, AppState>,
+    profile_id: i64,
+    file_path: String,
+) -> Result<(), AppError> {
+    export_profile_impl(&state.pool, profile_id, &file_path).await
+}
+
+/// Result of `import_profile`: the newly created profile, plus any member names from the file
+/// that don't match a service currently discovered in this project (so the caller can surface
+/// "imported, but X wasn't found here" instead of silently dropping them).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProfileResult {
+    pub profile: Profile,
+    pub skipped_members: Vec<String>,
+}
+
+/// Reads a profile from `file_path` (written by `export_profile`) and creates it in
+/// `project_id`, matching member names against this project's currently-discovered services.
+/// A name that already exists in this project gets " (imported)" appended (then " (imported
+/// 2)", etc. if that's also taken) rather than rejecting the import or overwriting silently.
+/// A plain `&SqlitePool` function for the same testability reason as `export_profile_impl`.
+async fn import_profile_impl(
+    pool: &sqlx::SqlitePool,
+    project_id: i64,
+    file_path: &str,
+) -> Result<ImportProfileResult, AppError> {
+    let contents = std::fs::read_to_string(file_path)
+        .map_err(|e| AppError::Persist(format!("failed to read {file_path}: {e}")))?;
+    let imported: ExportedProfile = serde_json::from_str(&contents)
+        .map_err(|e| AppError::Persist(format!("not a valid profile file: {e}")))?;
+
+    let repos = persistence::list_repositories(pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let mut matched_ids = Vec::new();
+    let mut skipped_members = Vec::new();
+    for name in &imported.members {
+        match repos.iter().find(|r| &r.name == name) {
+            Some(repo) => matched_ids.push(repo.id),
+            None => skipped_members.push(name.clone()),
+        }
+    }
+
+    let existing_names: std::collections::HashSet<String> =
+        persistence::list_profiles(pool, project_id)
+            .await
+            .map_err(|e| AppError::Persist(e.to_string()))?
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+    let mut final_name = imported.name.clone();
+    if existing_names.contains(&final_name) {
+        final_name = format!("{} (imported)", imported.name);
+        let mut n = 2;
+        while existing_names.contains(&final_name) {
+            final_name = format!("{} (imported {n})", imported.name);
+            n += 1;
+        }
+    }
+
+    let id = persistence::create_profile(pool, project_id, &final_name, imported.launch_delay_ms)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    persistence::set_profile_members(pool, id, &matched_ids)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let row = persistence::get_profile(pool, id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist("profile not found after import".into()))?;
+    let profile = build_profile(pool, row).await?;
+
+    Ok(ImportProfileResult {
+        profile,
+        skipped_members,
+    })
+}
+
+/// Reads a profile from `file_path` (written by `export_profile`) and creates it in
+/// `project_id`, matching member names against this project's currently-discovered services.
+#[tauri::command]
+pub async fn import_profile(
+    state: State<'_, AppState>,
+    project_id: i64,
+    file_path: String,
+) -> Result<ImportProfileResult, AppError> {
+    import_profile_impl(&state.pool, project_id, &file_path).await
+}
+
 /// Update a repository's command configuration (F5), returning the updated row.
 /// Empty strings clear the corresponding override (revert to the detected default).
 #[tauri::command]
@@ -2550,6 +2695,183 @@ mod path_management_tests {
         assert!(missing.is_empty(), "per-repo checks must be skipped when the root itself is missing");
         assert_eq!(repositories.len(), 1, "repo row must still be returned, just unexamined");
 
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+}
+
+#[cfg(test)]
+mod profile_export_import_tests {
+    use super::*;
+
+    async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let unique = format!(
+            "mrl_profile_test_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let db_path = std::env::temp_dir().join(unique);
+        let pool = persistence::init_pool(&db_path).await.expect("init_pool failed");
+        persistence::run_migrations(&pool).await.expect("run_migrations failed");
+        (pool, db_path)
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn temp_json_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "mrl-profile-export-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn export_then_import_round_trips_name_delay_and_member_order_by_name() {
+        let (pool, db_path) = setup_test_db().await;
+        let json_path = temp_json_path();
+
+        // Source project: three repos, a profile with two of them in a specific order.
+        let source = persistence::upsert_project(&pool, "Source", "/repos/source")
+            .await
+            .expect("upsert source failed");
+        let api = persistence::upsert_repository(&pool, source.id, "api", "/repos/source/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert api failed");
+        let worker = persistence::upsert_repository(&pool, source.id, "worker", "/repos/source/worker", "npm", Some("dev"), true)
+            .await
+            .expect("upsert worker failed");
+        persistence::upsert_repository(&pool, source.id, "web", "/repos/source/web", "npm", Some("dev"), true)
+            .await
+            .expect("upsert web failed");
+
+        let profile_id = persistence::create_profile(&pool, source.id, "Backend", 2500)
+            .await
+            .expect("create profile failed");
+        persistence::set_profile_members(&pool, profile_id, &[worker.id, api.id])
+            .await
+            .expect("set members failed");
+
+        export_profile_impl(&pool, profile_id, json_path.to_str().unwrap())
+            .await
+            .expect("export failed");
+
+        // Target project: same repo NAMES, but different database ids and paths (a different
+        // machine's discovery of the same project) -- this is what import must re-match against.
+        let target = persistence::upsert_project(&pool, "Target", "/repos/target")
+            .await
+            .expect("upsert target failed");
+        let target_worker = persistence::upsert_repository(&pool, target.id, "worker", "/repos/target/worker", "npm", Some("dev"), true)
+            .await
+            .expect("upsert target worker failed");
+        let target_api = persistence::upsert_repository(&pool, target.id, "api", "/repos/target/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert target api failed");
+        assert_ne!(target_worker.id, worker.id, "sanity check: ids must differ across projects");
+
+        let result = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+            .await
+            .expect("import failed");
+
+        assert_eq!(result.profile.name, "Backend");
+        assert_eq!(result.profile.launch_delay_ms, 2500);
+        assert_eq!(
+            result.profile.repository_ids,
+            vec![target_worker.id, target_api.id],
+            "members must re-match by name to the TARGET project's own ids, in the exported order"
+        );
+        assert!(result.skipped_members.is_empty());
+
+        let _ = std::fs::remove_file(&json_path);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn import_reports_member_names_not_found_in_target_project() {
+        let (pool, db_path) = setup_test_db().await;
+        let json_path = temp_json_path();
+
+        let source = persistence::upsert_project(&pool, "Source", "/repos/source2")
+            .await
+            .expect("upsert source failed");
+        let api = persistence::upsert_repository(&pool, source.id, "api", "/repos/source2/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert api failed");
+        let profile_id = persistence::create_profile(&pool, source.id, "Backend", 1000)
+            .await
+            .expect("create profile failed");
+        // "ghost" has no matching repository row anywhere -- simulate via a manually-written
+        // export file rather than a real repo, since export always emits real names.
+        persistence::set_profile_members(&pool, profile_id, &[api.id])
+            .await
+            .expect("set members failed");
+        export_profile_impl(&pool, profile_id, json_path.to_str().unwrap())
+            .await
+            .expect("export failed");
+        let mut contents = std::fs::read_to_string(&json_path).unwrap();
+        contents = contents.replace("\"api\"", "\"ghost\"");
+        std::fs::write(&json_path, contents).unwrap();
+
+        let target = persistence::upsert_project(&pool, "Target", "/repos/target2")
+            .await
+            .expect("upsert target failed");
+        persistence::upsert_repository(&pool, target.id, "web", "/repos/target2/web", "npm", Some("dev"), true)
+            .await
+            .expect("upsert target web failed");
+
+        let result = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+            .await
+            .expect("import failed");
+
+        assert_eq!(result.skipped_members, vec!["ghost".to_string()]);
+        assert!(result.profile.repository_ids.is_empty(), "no member matched, profile has no members");
+
+        let _ = std::fs::remove_file(&json_path);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn import_auto_suffixes_name_on_collision() {
+        let (pool, db_path) = setup_test_db().await;
+        let json_path = temp_json_path();
+
+        let source = persistence::upsert_project(&pool, "Source", "/repos/source3")
+            .await
+            .expect("upsert source failed");
+        let profile_id = persistence::create_profile(&pool, source.id, "Backend", 1000)
+            .await
+            .expect("create profile failed");
+        export_profile_impl(&pool, profile_id, json_path.to_str().unwrap())
+            .await
+            .expect("export failed");
+
+        let target = persistence::upsert_project(&pool, "Target", "/repos/target3")
+            .await
+            .expect("upsert target failed");
+        persistence::create_profile(&pool, target.id, "Backend", 500)
+            .await
+            .expect("pre-existing Backend profile failed");
+
+        let first = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+            .await
+            .expect("first import failed");
+        assert_eq!(first.profile.name, "Backend (imported)");
+
+        let second = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+            .await
+            .expect("second import failed");
+        assert_eq!(second.profile.name, "Backend (imported 2)");
+
+        let _ = std::fs::remove_file(&json_path);
         pool.close().await;
         cleanup_db(&db_path);
     }

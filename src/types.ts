@@ -92,6 +92,13 @@ export interface Profile {
   repositoryIds: number[];
 }
 
+/** Result of `import_profile`: the created profile, plus any member names from the file that
+ * didn't match a service currently discovered in the target project. */
+export interface ImportProfileResult {
+  profile: Profile;
+  skippedMembers: string[];
+}
+
 /** An entry in a launch record's `items` list (one per repository). */
 export interface LaunchItemRecord {
   repositoryName: string;
