@@ -681,6 +681,12 @@ pub async fn open_repo_folder(
 /// Open an external terminal at the repository's working directory (F12). An in-app
 /// "integrated" terminal is deferred past v1 (R6) — this always opens an external window, in
 /// the shell chosen by `Settings.terminal_shell`.
+///
+/// When Windows Terminal is installed, this opens as a new tab in the existing `wt` window
+/// instead of a brand-new separate window (feedback #4) — `wt.exe` is only ever the UI shell for
+/// this blank interactive terminal; it is never tracked or added to the app's managed process
+/// tree the way a repo's dev-server process is. Falls back to the original behavior (a plain new
+/// `cmd`/`powershell` window) when Windows Terminal isn't found.
 #[tauri::command]
 pub async fn open_repo_terminal(
     state: State<'_, AppState>,
@@ -695,6 +701,15 @@ pub async fn open_repo_terminal(
     {
         let settings = load_settings(&state.pool).await?;
         let shell = shell_program(&settings.terminal_shell);
+
+        if windows_terminal_available() {
+            std::process::Command::new("wt")
+                .args(wt_launch_args(shell, &repo.path))
+                .spawn()
+                .map_err(|e| AppError::Launch(format!("failed to open terminal: {e}")))?;
+            return Ok(());
+        }
+
         let mut args = vec!["/C", "start", "", shell];
         if shell == "powershell" {
             // Same execution-policy bypass as windows_launch_program_args — otherwise the
@@ -1181,6 +1196,46 @@ fn windows_launch_program_args(terminal_shell: &str, command_line: &str) -> (Str
     } else {
         ("cmd".to_string(), vec!["/C".to_string(), command_line.to_string()])
     }
+}
+
+/// Whether `wt.exe` (Windows Terminal) is resolvable on `PATH`. Checked at call time — no
+/// caching — so installing/uninstalling Windows Terminal takes effect on the very next "Open
+/// Terminal" click without needing an app restart. Uses `where` (via a hidden `cmd /C` wrapper,
+/// matching this file's existing shim-hiding idiom) rather than invoking `wt` itself, since `wt`
+/// has no side-effect-free "just check if you exist" flag.
+#[cfg(windows)]
+fn windows_terminal_available() -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("cmd")
+        .args(["/C", "where", "wt"])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Builds the args for opening a new Windows Terminal tab at `repo_path` running `shell`.
+/// `-w 0` targets the most-recently-used `wt` window (creating one if none exists) — this is
+/// what gives "one window, many tabs" behavior for free, with no window-tracking of our own.
+/// Windows Terminal itself is only ever the UI shell for this blank interactive shell; the
+/// process it hosts is never tracked, has no PID recorded, and is not part of any Job Object —
+/// unlike a repo's dev-server process (see `process_manager.rs`), it is intentionally outside
+/// the app's managed process tree.
+fn wt_launch_args(shell: &str, repo_path: &str) -> Vec<String> {
+    let mut args = vec![
+        "-w".to_string(),
+        "0".to_string(),
+        "nt".to_string(),
+        "-d".to_string(),
+        repo_path.to_string(),
+        shell.to_string(),
+    ];
+    if shell == "powershell" {
+        // Same execution-policy bypass as windows_launch_program_args — otherwise the first
+        // npm/pnpm/yarn/bun command typed in this tab fails to load its .ps1 shim.
+        args.extend(["-ExecutionPolicy".to_string(), "Bypass".to_string()]);
+    }
+    args
 }
 
 const SETTINGS_KEY: &str = "app_settings";
@@ -1988,6 +2043,40 @@ mod settings_tests {
     #[test]
     fn settings_default_terminal_shell_is_cmd() {
         assert_eq!(Settings::default().terminal_shell, "cmd");
+    }
+
+    #[test]
+    fn wt_launch_args_targets_most_recently_used_window_and_sets_starting_dir() {
+        let args = wt_launch_args("cmd", "C:\\repos\\api");
+        assert_eq!(
+            args,
+            vec![
+                "-w".to_string(),
+                "0".to_string(),
+                "nt".to_string(),
+                "-d".to_string(),
+                "C:\\repos\\api".to_string(),
+                "cmd".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wt_launch_args_adds_execution_policy_bypass_for_powershell() {
+        let args = wt_launch_args("powershell", "C:\\repos\\api");
+        assert_eq!(
+            args,
+            vec![
+                "-w".to_string(),
+                "0".to_string(),
+                "nt".to_string(),
+                "-d".to_string(),
+                "C:\\repos\\api".to_string(),
+                "powershell".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+            ]
+        );
     }
 
     #[test]
