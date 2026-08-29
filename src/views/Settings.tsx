@@ -103,7 +103,7 @@ export function Settings() {
           checked={settings.autoDetect}
           onChange={(e) => set("autoDetect", e.target.checked)}
         />
-        Auto-detect repositories on open
+        Auto-detect services on open
       </label>
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28 }}>
         <input
@@ -154,7 +154,7 @@ export function Settings() {
           <option value="powershell">PowerShell</option>
         </select>
         <p className="text-muted" style={{ margin: "6px 0 28px" }}>
-          Used for "Open Terminal" and for running every repository's dev-server command. Command
+          Used for "Open Terminal" and for running every service's dev-server command. Command
           overrides must use PowerShell syntax when PowerShell is selected (e.g. ";" instead of
           "&&", "$env:VAR" instead of "%VAR%").
         </p>
@@ -171,13 +171,13 @@ export function Settings() {
         Enable desktop notifications
       </label>
       <p className="text-muted" style={{ margin: "6px 0 0" }}>
-        Sends a desktop notification when a repository crashes.
+        Sends a desktop notification when a service crashes.
       </p>
 
       <div className="sectiontitle" style={{ padding: "24px 0 8px" }}>Action buttons</div>
       <div className="hr" style={{ margin: "0 0 18px" }} />
       <p className="text-muted" style={{ margin: "0 0 14px" }}>
-        Choose which action buttons appear on each repository row.
+        Choose which action buttons appear on each service row.
       </p>
       {ACTION_KEYS.map(({ key, label, icon }) => (
         <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>

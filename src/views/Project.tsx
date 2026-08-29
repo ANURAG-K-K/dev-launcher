@@ -261,7 +261,7 @@ export function Project({
   async function removeRepo(repo: Repository) {
     const ok = await confirm(
       `Remove "${repo.name}"? It's stopped and hidden from the list; its launch history is kept, and re-scanning restores it.`,
-      { title: "Remove repository", kind: "warning" },
+      { title: "Remove service", kind: "warning" },
     );
     if (!ok) return;
     await runAction(repo.id, async () => {
@@ -484,7 +484,7 @@ export function Project({
           )}
 
           <span className="text-muted" style={{ fontSize: 11 }}>
-            Applying a profile sets which repositories are enabled.
+            Applying a profile sets which services are enabled.
           </span>
           {profileError && (
             <span style={{ color: "var(--color-status-bad-fg)", fontSize: 11 }}>{profileError}</span>
@@ -495,7 +495,7 @@ export function Project({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <p className="text-muted" style={{ margin: 0 }}>
-            {repositories.length} {repositories.length === 1 ? "repository" : "repositories"} discovered
+            {repositories.length} {repositories.length === 1 ? "service" : "services"} discovered
           </p>
           {runningCount > 0 && <span className="tag tag-good">● {runningCount} running</span>}
         </div>
@@ -517,7 +517,7 @@ export function Project({
             />
           </label>
           <button type="button" className="btn btn-primary" onClick={executeAll} disabled={executeBusy}>
-            {executeBusy ? "Executing…" : "Execute"}
+            {executeBusy ? "Launching…" : "Launch Project"}
           </button>
           <button
             type="button"
@@ -532,7 +532,7 @@ export function Project({
             className="btn btn-secondary"
             onClick={refreshRepos}
             disabled={refreshBusy}
-            title="Check the current repository list against disk; never brings back a removed repo"
+            title="Check the current service list against disk; never brings back a removed service"
           >
             {refreshBusy ? "Refreshing…" : "Refresh"}
           </button>
@@ -541,7 +541,7 @@ export function Project({
             className="btn btn-secondary"
             onClick={rescan}
             disabled={rescanBusy}
-            title="Full directory scan; can rediscover new repos and un-remove a previously removed one"
+            title="Full directory scan; can rediscover new services and un-remove a previously removed one"
           >
             {rescanBusy ? "Scanning…" : "Re-scan"}
           </button>
@@ -550,9 +550,9 @@ export function Project({
             className="btn btn-secondary"
             onClick={addRepositoryManually}
             disabled={addRepoBusy}
-            title="Pick a folder to add as a repository, e.g. one auto-scan didn't find"
+            title="Pick a folder to add as a service, e.g. one auto-scan didn't find"
           >
-            {addRepoBusy ? "Adding…" : "Add Repository"}
+            {addRepoBusy ? "Adding…" : "Add Service"}
           </button>
         </div>
       </div>
@@ -574,14 +574,14 @@ export function Project({
       )}
 
       {repositories.length === 0 ? (
-        <p className="text-muted">No repositories with a package.json found under this root.</p>
+        <p className="text-muted">No services with a package.json found under this root.</p>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table className="table" style={{ minWidth: 640 }}>
             <thead>
               <tr>
                 <th>Enabled</th>
-                <th>Repository</th>
+                <th>Service</th>
                 <th>Branch</th>
                 <th>PID</th>
                 <th>Package Manager</th>
@@ -613,7 +613,7 @@ export function Project({
                       {r.name}
                       {missing && (
                         <span
-                          title="This repository's folder could not be found on disk"
+                          title="This service's folder could not be found on disk"
                           style={{ marginLeft: 6, fontWeight: 400, fontSize: 11, color: "var(--color-status-bad-fg)" }}
                         >
                           ⚠ folder not found

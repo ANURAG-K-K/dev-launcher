@@ -101,7 +101,7 @@ export function Home({
   }
 
   async function deleteProjectRow(p: Project) {
-    if (!confirm(`Delete project "${p.name}"? This removes it and all its repository configuration permanently.`)) {
+    if (!confirm(`Delete project "${p.name}"? This removes it and all its service configuration permanently.`)) {
       return;
     }
     setRowError((prev) => ({ ...prev, [p.id]: "" }));
@@ -121,7 +121,7 @@ export function Home({
     <div style={{ maxWidth: 920, padding: "40px 48px" }}>
       <h1 style={{ fontSize: 32, marginBottom: 6 }}>Home</h1>
       <p className="text-muted" style={{ margin: "0 0 28px", maxWidth: "56ch" }}>
-        Open a project root to discover repositories, or jump back into one you had running.
+        Open a project root to discover services, or jump back into one you had running.
       </p>
 
       <div className="card elev-sm" style={{ marginBottom: 24 }}>
