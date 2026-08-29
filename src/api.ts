@@ -1,10 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { BranchEntry, DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RefreshResult, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import type { BranchEntry, DependencyEdge, ExecuteResult, ImportProfileResult, LaunchRecord, Profile, Project, ProjectWithRepos, RefreshResult, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
   const res = await openDialog({ directory: true, multiple: false });
+  return typeof res === "string" ? res : null;
+}
+
+/** Native save-file picker for exporting a profile; returns the chosen path, or null if cancelled. */
+export async function pickProfileSavePath(defaultName: string): Promise<string | null> {
+  const res = await saveDialog({
+    defaultPath: `${defaultName}.json`,
+    filters: [{ name: "Profile", extensions: ["json"] }],
+  });
+  return typeof res === "string" ? res : null;
+}
+
+/** Native open-file picker for importing a profile; returns the chosen path, or null if cancelled. */
+export async function pickProfileOpenPath(): Promise<string | null> {
+  const res = await openDialog({
+    directory: false,
+    multiple: false,
+    filters: [{ name: "Profile", extensions: ["json"] }],
+  });
   return typeof res === "string" ? res : null;
 }
 
@@ -101,6 +120,12 @@ export const deleteProfile = (profileId: number) =>
 
 export const applyProfile = (profileId: number) =>
   invoke<Repository[]>("apply_profile", { profileId });
+
+export const exportProfile = (profileId: number, filePath: string) =>
+  invoke<void>("export_profile", { profileId, filePath });
+
+export const importProfile = (projectId: number, filePath: string) =>
+  invoke<ImportProfileResult>("import_profile", { projectId, filePath });
 
 export const openRepoFolder = (repositoryId: number) =>
   invoke<void>("open_repo_folder", { repositoryId });

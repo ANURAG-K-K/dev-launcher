@@ -102,6 +102,8 @@ pub fn run() {
             commands::update_profile,
             commands::delete_profile,
             commands::apply_profile,
+            commands::export_profile,
+            commands::import_profile,
             commands::start_repo,
             commands::stop_repo,
             commands::restart_repo,

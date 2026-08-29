@@ -5,7 +5,11 @@ import {
   createProfile,
   deleteProfile,
   executeProject,
+  exportProfile,
+  importProfile,
   pickDirectory,
+  pickProfileOpenPath,
+  pickProfileSavePath,
   gitFetch,
   gitPull,
   gitStatusProject,
@@ -82,6 +86,7 @@ export function Project({
   const [stopBusy, setStopBusy] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const [importNotice, setImportNotice] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
@@ -343,6 +348,43 @@ export function Project({
     }
   }
 
+  async function exportActiveProfile() {
+    if (!activeProfile) return;
+    const path = await pickProfileSavePath(activeProfile.name);
+    if (!path) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      await exportProfile(activeProfile.id, path);
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function importProfileForProject() {
+    const path = await pickProfileOpenPath();
+    if (!path) return;
+    setProfileBusy(true);
+    setProfileError("");
+    setImportNotice("");
+    try {
+      const result = await importProfile(project!.id, path);
+      onProfilesChanged();
+      setActiveProfileId(result.profile.id);
+      if (result.skippedMembers.length > 0) {
+        setImportNotice(
+          `Imported "${result.profile.name}" - not found in this project: ${result.skippedMembers.join(", ")}`,
+        );
+      }
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
   const runningCount = repositories.filter((r) => {
     const s = statuses[r.id]?.status;
     return s === "running" || s === "starting";
@@ -486,14 +528,35 @@ export function Project({
               <button type="button" className="btn btn-ghost" onClick={deleteActiveProfile} disabled={profileBusy}>
                 Delete
               </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={exportActiveProfile}
+                disabled={profileBusy}
+                title="Save this profile to a file, e.g. to share with a teammate"
+              >
+                Export…
+              </button>
             </>
           )}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={importProfileForProject}
+            disabled={profileBusy}
+            title="Load a profile from a file, matching its services by name against this project"
+          >
+            Import…
+          </button>
 
           <span className="text-muted" style={{ fontSize: 11 }}>
             Applying a profile sets which services are enabled.
           </span>
           {profileError && (
             <span style={{ color: "var(--color-status-bad-fg)", fontSize: 11 }}>{profileError}</span>
+          )}
+          {importNotice && (
+            <span className="text-muted" style={{ fontSize: 11 }}>{importNotice}</span>
           )}
         </div>
       </div>
