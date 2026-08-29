@@ -751,6 +751,31 @@ pub async fn update_repository_path(
         .await
 }
 
+/// Refreshes a repository's detected package manager/script in place, leaving `path`, `name`,
+/// and every user override untouched. Used by the lightweight "Refresh" action (feedback: a
+/// user-driven Remove must not be silently undone by re-detection, unlike the full "Re-scan").
+pub async fn refresh_repository_detection(
+    pool: &SqlitePool,
+    id: i64,
+    package_manager: &str,
+    detected_script: Option<&str>,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE repositories SET package_manager = ?, detected_script = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(package_manager)
+    .bind(detected_script)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 /// Atomically applies a computed remap and repoints the project at `new_root_path`: either both
 /// the repo updates and the root_path change land together, or (on any failure, e.g. a
 /// UNIQUE(root_path) conflict) neither does.
@@ -1129,6 +1154,32 @@ mod tests {
         assert_eq!(updated.env_file.as_deref(), Some(".env.local"), "env_file override must survive a path change");
         assert_eq!(updated.enabled, 1, "enabled must survive a path change");
         assert_eq!(updated.favorite, 1, "favorite must survive a path change");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn refresh_repository_detection_updates_detection_but_leaves_path_name_and_overrides() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+        update_repository_config(&pool, repo.id, "npm", Some("npm run custom"), None, None)
+            .await
+            .expect("set command override failed");
+
+        let updated = refresh_repository_detection(&pool, repo.id, "pnpm", Some("start:dev"))
+            .await
+            .expect("refresh_repository_detection failed");
+
+        assert_eq!(updated.package_manager, "pnpm");
+        assert_eq!(updated.detected_script.as_deref(), Some("start:dev"));
+        assert_eq!(updated.path, "/repos/proj/api", "path must be untouched by a detection refresh");
+        assert_eq!(updated.name, "api", "name must be untouched by a detection refresh");
+        assert_eq!(updated.command.as_deref(), Some("npm run custom"), "command override must survive a detection refresh");
 
         pool.close().await;
         cleanup(&path);

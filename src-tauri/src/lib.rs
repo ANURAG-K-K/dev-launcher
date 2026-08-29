@@ -70,6 +70,7 @@ pub fn run() {
             commands::open_project,
             commands::rename_project,
             commands::scan_repositories,
+            commands::refresh_repositories,
             commands::delete_project,
             commands::update_project_path,
             commands::add_repository_manual,

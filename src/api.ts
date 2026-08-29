@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { BranchEntry, DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
+import type { BranchEntry, DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RefreshResult, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
@@ -13,6 +13,9 @@ export const openProject = (rootPath: string) =>
 
 export const scanRepositories = (projectId: number) =>
   invoke<ProjectWithRepos>("scan_repositories", { projectId });
+
+export const refreshRepositories = (projectId: number) =>
+  invoke<RefreshResult>("refresh_repositories", { projectId });
 
 export const addRepositoryManual = (projectId: number, path: string) =>
   invoke<Repository[]>("add_repository_manual", { projectId, path });
