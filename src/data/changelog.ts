@@ -28,6 +28,8 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Sidebar shows a green dot on a project with services still running in the background",
       "Running indicator dot on the Project nav tab for the currently open project",
       "Export/import launch profiles as JSON, for sharing across machines or teammates",
+      "Fixed imported profile not taking effect until switching profiles away and back",
+      "Fixed importing a profile from an unrelated project silently creating an empty one - now rejected with a clear error",
     ],
   },
   {

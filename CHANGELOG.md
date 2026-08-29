@@ -23,6 +23,8 @@ All notable changes to this project. Mirrors the in-app "What's new" dialog
 - Sidebar shows a green dot on a project with services still running in the background
 - Running indicator dot on the Project nav tab for the currently open project
 - Export/import launch profiles as JSON, for sharing across machines or teammates
+- Fixed imported profile not taking effect until switching profiles away and back
+- Fixed importing a profile from an unrelated project silently creating an empty one - now rejected with a clear error
 
 ## 2026-08-03
 - Inline project rename
