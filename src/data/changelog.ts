@@ -26,6 +26,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "\"Open Terminal\" reuses one Windows Terminal window as tabs, when Windows Terminal is installed",
       "Filter box for the services table (Project view) and the sidebar's Recent Projects list",
       "Sidebar shows a green dot on a project with services still running in the background",
+      "Running indicator dot on the Project nav tab for the currently open project",
     ],
   },
   {
