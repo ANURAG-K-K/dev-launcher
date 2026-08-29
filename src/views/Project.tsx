@@ -31,7 +31,7 @@ import {
   getSettings,
   updateProjectPath,
 } from "@/api";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 import { BranchSwitchDialog } from "./BranchSwitchDialog";
@@ -372,6 +372,12 @@ export function Project({
     try {
       const result = await importProfile(project!.id, path);
       onProfilesChanged();
+      // Actually apply it - same as picking it from the dropdown (selectProfile) - so the
+      // service enabled/disabled state takes effect immediately, not only after switching
+      // profiles back and forth.
+      const updatedRepos = await applyProfile(result.profile.id);
+      onRepositoriesReplaced(updatedRepos);
+      setLaunchDelayMs(result.profile.launchDelayMs);
       setActiveProfileId(result.profile.id);
       if (result.skippedMembers.length > 0) {
         setImportNotice(
@@ -379,7 +385,7 @@ export function Project({
         );
       }
     } catch (err) {
-      setProfileError(String(err));
+      await message(String(err), { title: "Import failed", kind: "error" });
     } finally {
       setProfileBusy(false);
     }

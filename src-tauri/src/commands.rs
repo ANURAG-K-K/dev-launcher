@@ -1498,6 +1498,8 @@ pub struct ImportProfileResult {
 /// `project_id`, matching member names against this project's currently-discovered services.
 /// A name that already exists in this project gets " (imported)" appended (then " (imported
 /// 2)", etc. if that's also taken) rather than rejecting the import or overwriting silently.
+/// Rejected outright, before any mutation, if the file has at least one member and NONE of them
+/// match anything here - almost certainly the wrong project, not a same-project rename/removal.
 /// A plain `&SqlitePool` function for the same testability reason as `export_profile_impl`.
 async fn import_profile_impl(
     pool: &sqlx::SqlitePool,
@@ -1519,6 +1521,16 @@ async fn import_profile_impl(
             Some(repo) => matched_ids.push(repo.id),
             None => skipped_members.push(name.clone()),
         }
+    }
+
+    // None of the file's services exist here at all - this is almost certainly the wrong
+    // project (or an unrelated one), not a same-project rename/removal. Reject outright rather
+    // than silently creating a useless, empty profile with just a warning.
+    if !imported.members.is_empty() && matched_ids.is_empty() {
+        return Err(AppError::Persist(format!(
+            "none of this profile's {} service(s) were found in this project - it looks like it's from a different project",
+            imported.members.len()
+        )));
     }
 
     let existing_names: std::collections::HashSet<String> =
@@ -2795,7 +2807,7 @@ mod profile_export_import_tests {
     }
 
     #[tokio::test]
-    async fn import_reports_member_names_not_found_in_target_project() {
+    async fn import_reports_partially_skipped_members_but_succeeds() {
         let (pool, db_path) = setup_test_db().await;
         let json_path = temp_json_path();
 
@@ -2805,34 +2817,86 @@ mod profile_export_import_tests {
         let api = persistence::upsert_repository(&pool, source.id, "api", "/repos/source2/api", "npm", Some("dev"), true)
             .await
             .expect("upsert api failed");
+        let web = persistence::upsert_repository(&pool, source.id, "web", "/repos/source2/web", "npm", Some("dev"), true)
+            .await
+            .expect("upsert web failed");
         let profile_id = persistence::create_profile(&pool, source.id, "Backend", 1000)
             .await
             .expect("create profile failed");
-        // "ghost" has no matching repository row anywhere -- simulate via a manually-written
-        // export file rather than a real repo, since export always emits real names.
+        persistence::set_profile_members(&pool, profile_id, &[api.id, web.id])
+            .await
+            .expect("set members failed");
+        export_profile_impl(&pool, profile_id, json_path.to_str().unwrap())
+            .await
+            .expect("export failed");
+        // "web" has no matching repository in the target project (renamed/removed there), but
+        // "api" does -- a partial mismatch, distinct from the "wrong project entirely" case.
+        let mut contents = std::fs::read_to_string(&json_path).unwrap();
+        contents = contents.replace("\"web\"", "\"ghost\"");
+        std::fs::write(&json_path, contents).unwrap();
+
+        let target = persistence::upsert_project(&pool, "Target", "/repos/target2")
+            .await
+            .expect("upsert target failed");
+        let target_api = persistence::upsert_repository(&pool, target.id, "api", "/repos/target2/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert target api failed");
+
+        let result = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+            .await
+            .expect("import should succeed when at least one member matches");
+
+        assert_eq!(result.skipped_members, vec!["ghost".to_string()]);
+        assert_eq!(result.profile.repository_ids, vec![target_api.id]);
+
+        let _ = std::fs::remove_file(&json_path);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn import_rejects_when_no_members_match_target_project() {
+        let (pool, db_path) = setup_test_db().await;
+        let json_path = temp_json_path();
+
+        let source = persistence::upsert_project(&pool, "Source", "/repos/source4")
+            .await
+            .expect("upsert source failed");
+        let api = persistence::upsert_repository(&pool, source.id, "api", "/repos/source4/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert api failed");
+        let profile_id = persistence::create_profile(&pool, source.id, "Backend", 1000)
+            .await
+            .expect("create profile failed");
         persistence::set_profile_members(&pool, profile_id, &[api.id])
             .await
             .expect("set members failed");
         export_profile_impl(&pool, profile_id, json_path.to_str().unwrap())
             .await
             .expect("export failed");
-        let mut contents = std::fs::read_to_string(&json_path).unwrap();
-        contents = contents.replace("\"api\"", "\"ghost\"");
-        std::fs::write(&json_path, contents).unwrap();
 
-        let target = persistence::upsert_project(&pool, "Target", "/repos/target2")
+        // Target project shares NOTHING by name with the source -- e.g. a completely different
+        // project, like importing a multi-repo profile into an unrelated monorepo fixture.
+        let target = persistence::upsert_project(&pool, "Target", "/repos/target4")
             .await
             .expect("upsert target failed");
-        persistence::upsert_repository(&pool, target.id, "web", "/repos/target2/web", "npm", Some("dev"), true)
+        persistence::upsert_repository(&pool, target.id, "web", "/repos/target4/web", "npm", Some("dev"), true)
             .await
             .expect("upsert target web failed");
 
-        let result = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
+        let err = import_profile_impl(&pool, target.id, json_path.to_str().unwrap())
             .await
-            .expect("import failed");
+            .expect_err("import must be rejected when nothing matches");
+        assert!(
+            err.to_string().contains("different project"),
+            "error should explain why it was rejected, got: {err}"
+        );
 
-        assert_eq!(result.skipped_members, vec!["ghost".to_string()]);
-        assert!(result.profile.repository_ids.is_empty(), "no member matched, profile has no members");
+        // No profile must have been created for the rejected import.
+        let profiles_after = persistence::list_profiles(&pool, target.id)
+            .await
+            .expect("list profiles failed");
+        assert!(profiles_after.is_empty(), "rejected import must not create a profile");
 
         let _ = std::fs::remove_file(&json_path);
         pool.close().await;
