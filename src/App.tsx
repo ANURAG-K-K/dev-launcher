@@ -12,7 +12,7 @@ import { History } from "@/views/History";
 import { ChangelogDialog } from "@/views/ChangelogDialog";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
-import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, renameProject, restartRepo } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, pickDirectory, renameProject, restartRepo, updateProjectPath } from "@/api";
 import { applyTheme } from "@/lib/theme";
 import { IconButton } from "@/components/IconButton";
 
@@ -79,6 +79,8 @@ function App() {
   const [renamingProjectId, setRenamingProjectId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState("");
+  const [recentOpenError, setRecentOpenError] = useState<Record<number, string>>({});
+  const [locatingProjectId, setLocatingProjectId] = useState<number | null>(null);
   const renameCancelledRef = useRef(false);
   const crashCountsRef = useRef<Record<number, number>>({});
   const [appVersion, setAppVersion] = useState("");
@@ -199,11 +201,28 @@ function App() {
     }
   }
 
-  async function openRecent(rootPath: string) {
+  async function openRecent(p: ProjectT) {
+    setRecentOpenError((prev) => ({ ...prev, [p.id]: "" }));
     try {
-      applyResult(await openProject(rootPath));
-    } catch {
-      /* folder gone / unreadable — ignore */
+      applyResult(await openProject(p.rootPath));
+    } catch (err) {
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: String(err) }));
+    }
+  }
+
+  async function locateProject(p: ProjectT) {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setLocatingProjectId(p.id);
+    try {
+      const result = await updateProjectPath(p.id, dir);
+      setRecentProjects((prev) => prev.map((x) => (x.id === result.project.id ? result.project : x)));
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: "" }));
+      applyResult(result);
+    } catch (err) {
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: String(err) }));
+    } finally {
+      setLocatingProjectId(null);
     }
   }
 
@@ -386,19 +405,47 @@ function App() {
                   )}
                 </div>
               ) : (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
-                  <button
-                    className={cn("navitem", project?.id === p.id && "navitem-active")}
-                    title={p.rootPath}
-                    onClick={() => openRecent(p.rootPath)}
-                    style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
-                  >
-                    {p.name}
-                  </button>
-                  <IconButton title="Rename" onClick={() => startRename(p)}>
-                    <path d="M12 20h9" />
-                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                  </IconButton>
+                <div key={p.id}>
+                  <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
+                    <button
+                      className={cn("navitem", project?.id === p.id && "navitem-active")}
+                      title={p.rootPath}
+                      onClick={() => openRecent(p)}
+                      style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
+                    >
+                      {p.name}
+                    </button>
+                    <IconButton title="Rename" onClick={() => startRename(p)}>
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                    </IconButton>
+                  </div>
+                  {recentOpenError[p.id] && (
+                    <div
+                      style={{
+                        margin: "2px 16px 6px",
+                        padding: "6px 8px",
+                        borderRadius: "var(--radius-sm)",
+                        background: "var(--color-status-bad-bg)",
+                        color: "var(--color-status-bad-fg)",
+                        fontSize: 11,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
+                      <span>⚠ Folder not found — the project may have been moved or deleted.</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ alignSelf: "flex-start", padding: "3px 8px", fontSize: 11 }}
+                        onClick={() => locateProject(p)}
+                        disabled={locatingProjectId === p.id}
+                      >
+                        {locatingProjectId === p.id ? "Locating…" : "Locate…"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             )
