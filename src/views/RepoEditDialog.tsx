@@ -132,7 +132,7 @@ export function RepoEditDialog({
       >
         <h2 style={{ fontSize: 18, marginBottom: 18 }}>Edit — {name}</h2>
 
-        <Field label="Path" helper="Folder this repository launches from.">
+        <Field label="Path" helper="Folder this service launches from.">
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span
               className="mono text-muted"
@@ -194,9 +194,9 @@ export function RepoEditDialog({
           />
         </Field>
 
-        <Field label="Depends on" helper="Repositories that must be started before this one.">
+        <Field label="Depends on" helper="Services that must be started before this one.">
           {otherRepos.length === 0 ? (
-            <div className="text-muted" style={{ fontSize: 12 }}>No other repositories in this project.</div>
+            <div className="text-muted" style={{ fontSize: 12 }}>No other services in this project.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 160, overflowY: "auto" }}>
               {otherRepos.map((r) => (
