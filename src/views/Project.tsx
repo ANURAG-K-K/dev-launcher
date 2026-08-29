@@ -271,6 +271,7 @@ export function Project({
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
   const enabledIds = repositories.filter((r) => r.enabled === 1).map((r) => r.id);
+  const allEnabled = repositories.length > 0 && enabledIds.length === repositories.length;
 
   async function selectProfile(idStr: string) {
     setProfileError("");
@@ -516,8 +517,14 @@ export function Project({
               }}
             />
           </label>
-          <button type="button" className="btn btn-primary" onClick={executeAll} disabled={executeBusy}>
-            {executeBusy ? "Launching…" : "Launch Project"}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={executeAll}
+            disabled={executeBusy}
+            title={allEnabled ? "Launches every service in this project" : "Launches only the currently enabled services"}
+          >
+            {executeBusy ? "Launching…" : allEnabled ? "Launch Project" : "Launch"}
           </button>
           <button
             type="button"
