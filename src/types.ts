@@ -33,6 +33,14 @@ export interface ProjectWithRepos {
   repositories: Repository[];
 }
 
+/** Return type of the lightweight `refresh_repositories` command ("Refresh"). */
+export interface RefreshResult {
+  project: Project;
+  repositories: Repository[];
+  missingRepositoryIds: number[];
+  rootMissing: boolean;
+}
+
 /** Payload of the `repo_status_changed` event; also the return type of start/restart_repo. */
 export interface RepoStatus {
   repositoryId: number;

@@ -52,6 +52,15 @@ pub struct Repository {
 // Note: FromRow maps by the Rust field name to the DB column (both snake_case) — the serde
 // rename_all="camelCase" only affects JSON serialization to the frontend, not FromRow.
 
+/// One repository's refreshed location/detection after a project root move, ready to persist.
+/// Produced by `compute_repo_remap` in `commands.rs`.
+pub struct RepoRemap {
+    pub repository_id: i64,
+    pub path: String,
+    pub package_manager: String,
+    pub detected_script: Option<String>,
+}
+
 /// Open (creating if missing) the SQLite pool with WAL journal mode and foreign keys enabled.
 pub async fn init_pool(db_path: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
     if let Some(parent) = db_path.parent() {
@@ -122,6 +131,17 @@ pub async fn rename_project(pool: &SqlitePool, id: i64, name: &str) -> Result<Pr
         .bind(id)
         .fetch_one(pool)
         .await
+}
+
+/// Deletes a project. `ON DELETE CASCADE` on every project-scoped foreign key
+/// (`repositories`, `profiles`, `launch_history`, and transitively `repository_dependencies`,
+/// `profile_repositories`, `launch_history_items`) removes everything under it automatically.
+pub async fn delete_project(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Recent projects ordered by `last_opened_at` DESC.
@@ -699,6 +719,95 @@ pub async fn set_repository_enabled(
         .await
 }
 
+/// Updates a repository's location and refreshed detection fields (path/name/package
+/// manager/detected script). Deliberately leaves `command`, `args`, `env_file`, `enabled`,
+/// `favorite`, and `visible_console` untouched — same "preserve user overrides" contract
+/// `upsert_repository` already documents.
+pub async fn update_repository_path(
+    pool: &SqlitePool,
+    id: i64,
+    new_path: &str,
+    new_name: &str,
+    package_manager: &str,
+    detected_script: Option<&str>,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE repositories
+         SET path = ?, name = ?, package_manager = ?, detected_script = ?, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(new_path)
+    .bind(new_name)
+    .bind(package_manager)
+    .bind(detected_script)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
+/// Refreshes a repository's detected package manager/script in place, leaving `path`, `name`,
+/// and every user override untouched. Used by the lightweight "Refresh" action (feedback: a
+/// user-driven Remove must not be silently undone by re-detection, unlike the full "Re-scan").
+pub async fn refresh_repository_detection(
+    pool: &SqlitePool,
+    id: i64,
+    package_manager: &str,
+    detected_script: Option<&str>,
+) -> Result<Repository, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE repositories SET package_manager = ?, detected_script = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(package_manager)
+    .bind(detected_script)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, Repository>("SELECT * FROM repositories WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
+/// Atomically applies a computed remap and repoints the project at `new_root_path`: either both
+/// the repo updates and the root_path change land together, or (on any failure, e.g. a
+/// UNIQUE(root_path) conflict) neither does.
+pub async fn apply_project_remap(
+    pool: &SqlitePool,
+    project_id: i64,
+    new_root_path: &str,
+    remap: &[RepoRemap],
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+    for r in remap {
+        sqlx::query(
+            "UPDATE repositories SET path = ?, package_manager = ?, detected_script = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&r.path)
+        .bind(&r.package_manager)
+        .bind(r.detected_script.as_deref())
+        .bind(&now)
+        .bind(r.repository_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?")
+        .bind(new_root_path)
+        .bind(&now)
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,5 +1059,195 @@ mod tests {
             reopened.name, "My Custom Name",
             "a rename must survive reopening the project — this is the bug this task fixes"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascades_to_repositories_profiles_and_launch_history() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Cascade Test", "/repos/cascade")
+            .await
+            .expect("upsert project failed");
+
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/cascade/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        let profile_id = create_profile(&pool, project.id, "Everything", 1000)
+            .await
+            .expect("create profile failed");
+        set_profile_members(&pool, profile_id, &[repo.id])
+            .await
+            .expect("set profile members failed");
+
+        let history_id = insert_launch_history(&pool, project.id, Some(profile_id))
+            .await
+            .expect("insert launch history failed");
+        insert_launch_history_item(&pool, history_id, repo.id, None, "running")
+            .await
+            .expect("insert launch history item failed");
+
+        delete_project(&pool, project.id).await.expect("delete_project failed");
+
+        let repo_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repositories WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count repositories failed");
+        let profile_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count profiles failed");
+        let history_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM launch_history WHERE project_id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count launch_history failed");
+        let project_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE id = ?")
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count projects failed");
+
+        assert_eq!(repo_count, 0, "repositories must cascade-delete");
+        assert_eq!(profile_count, 0, "profiles must cascade-delete");
+        assert_eq!(history_count, 0, "launch_history must cascade-delete");
+        assert_eq!(project_count, 0, "project itself must be deleted");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_refreshes_detection_but_preserves_user_overrides() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        update_repository_config(&pool, repo.id, "pnpm", Some("pnpm run custom"), Some("--flag"), Some(".env.local"))
+            .await
+            .expect("update_repository_config failed");
+        set_repository_favorite(&pool, repo.id, true).await.expect("set favorite failed");
+
+        let updated = update_repository_path(
+            &pool,
+            repo.id,
+            "/repos/proj/api-renamed",
+            "api-renamed",
+            "yarn",
+            Some("start:dev"),
+        )
+        .await
+        .expect("update_repository_path failed");
+
+        assert_eq!(updated.path, "/repos/proj/api-renamed");
+        assert_eq!(updated.name, "api-renamed");
+        assert_eq!(updated.package_manager, "yarn");
+        assert_eq!(updated.detected_script.as_deref(), Some("start:dev"));
+
+        assert_eq!(updated.command.as_deref(), Some("pnpm run custom"), "command override must survive a path change");
+        assert_eq!(updated.args.as_deref(), Some("--flag"), "args override must survive a path change");
+        assert_eq!(updated.env_file.as_deref(), Some(".env.local"), "env_file override must survive a path change");
+        assert_eq!(updated.enabled, 1, "enabled must survive a path change");
+        assert_eq!(updated.favorite, 1, "favorite must survive a path change");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn refresh_repository_detection_updates_detection_but_leaves_path_name_and_overrides() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+        update_repository_config(&pool, repo.id, "npm", Some("npm run custom"), None, None)
+            .await
+            .expect("set command override failed");
+
+        let updated = refresh_repository_detection(&pool, repo.id, "pnpm", Some("start:dev"))
+            .await
+            .expect("refresh_repository_detection failed");
+
+        assert_eq!(updated.package_manager, "pnpm");
+        assert_eq!(updated.detected_script.as_deref(), Some("start:dev"));
+        assert_eq!(updated.path, "/repos/proj/api", "path must be untouched by a detection refresh");
+        assert_eq!(updated.name, "api", "name must be untouched by a detection refresh");
+        assert_eq!(updated.command.as_deref(), Some("npm run custom"), "command override must survive a detection refresh");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_rejects_path_already_used_by_another_repo_in_same_project() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo_a = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo a failed");
+        let repo_b = upsert_repository(&pool, project.id, "web", "/repos/proj/web", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo b failed");
+
+        // Point web at api's existing path -> must violate the (project_id, path) UNIQUE constraint.
+        let conflict = update_repository_path(&pool, repo_b.id, "/repos/proj/api", "api", "npm", Some("dev")).await;
+        assert!(conflict.is_err(), "pointing repo b at repo a's path must be rejected");
+
+        let b_after = get_repository(&pool, repo_b.id)
+            .await
+            .expect("get repo b failed")
+            .expect("repo b must still exist");
+        assert_eq!(b_after.path, "/repos/proj/web", "repo b's path must be unchanged after the rejected update");
+
+        let a_after = get_repository(&pool, repo_a.id)
+            .await
+            .expect("get repo a failed")
+            .expect("repo a must still exist");
+        assert_eq!(a_after.path, "/repos/proj/api", "repo a must be completely unaffected");
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn apply_project_remap_rolls_back_everything_on_conflict() {
+        let (pool, path) = setup_test_db().await;
+
+        let a = upsert_project(&pool, "A", "/repos/a").await.expect("upsert a failed");
+        let _b = upsert_project(&pool, "B", "/repos/b").await.expect("upsert b failed");
+        let repo = upsert_repository(&pool, a.id, "api", "/repos/a/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        let remap = vec![RepoRemap {
+            repository_id: repo.id,
+            path: "/repos/a-moved/api".to_string(),
+            package_manager: "yarn".to_string(),
+            detected_script: Some("start:dev".to_string()),
+        }];
+
+        // "/repos/b" is already taken by project B, so the root_path UPDATE inside the transaction
+        // must fail on the UNIQUE constraint -- after the repo row's UPDATE already ran earlier in
+        // the same transaction. This is the real failure path the atomicity guarantee protects.
+        let result = apply_project_remap(&pool, a.id, "/repos/b", &remap).await;
+        assert!(result.is_err(), "conflicting root_path must fail");
+
+        let a_after = get_project(&pool, a.id).await.expect("get a failed").expect("a must still exist");
+        assert_eq!(a_after.root_path, "/repos/a", "project root_path must be unchanged after rollback");
+
+        let repo_after = get_repository(&pool, repo.id).await.expect("get repo failed").expect("repo must still exist");
+        assert_eq!(repo_after.path, "/repos/a/api", "repo path must be unchanged after rollback");
+        assert_eq!(repo_after.package_manager, "npm", "repo package_manager must be unchanged after rollback");
+
+        pool.close().await;
+        cleanup(&path);
     }
 }

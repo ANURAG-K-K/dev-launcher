@@ -17,6 +17,17 @@ pub struct ProjectWithRepos {
     pub repositories: Vec<persistence::Repository>,
 }
 
+/// Response for `refresh_repositories`: the active repository list plus which of them
+/// couldn't be found on disk, without mutating anything for a repo that's simply missing.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshResult {
+    pub project: persistence::Project,
+    pub repositories: Vec<persistence::Repository>,
+    pub missing_repository_ids: Vec<i64>,
+    pub root_missing: bool,
+}
+
 /// Discover + persist repositories under a project root, registering/refreshing the project.
 /// (F1 open project + F2/F3 discovery.)
 #[tauri::command]
@@ -89,6 +100,126 @@ pub async fn scan_repositories(
     })
 }
 
+/// Lightweight check-and-refresh for the already-listed (active, non-removed) repositories of a
+/// project: verifies each one's folder + `package.json` still exist and re-detects its package
+/// manager/script if so, but — unlike `scan_repositories` ("Re-scan") — never discovers new
+/// repos and never un-removes a repo the user deliberately removed. A repo whose folder can't be
+/// found is reported via `missing_repository_ids` without touching its row at all, so a
+/// temporary/misdetected miss can't silently corrupt its config. If the project root itself is
+/// gone, per-repo checks are skipped entirely (`root_missing: true`) rather than reporting every
+/// repo as individually missing.
+#[tauri::command]
+pub async fn refresh_repositories(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<RefreshResult, AppError> {
+    let project = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("project {project_id} not found")))?;
+
+    let root_missing = !std::path::Path::new(&project.root_path).is_dir();
+    let mut repositories = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let mut missing_repository_ids = Vec::new();
+
+    if !root_missing {
+        for repo in repositories.iter_mut() {
+            let dir = std::path::Path::new(&repo.path);
+            match scanner::classify_repo_dir(dir, Some(&repo.name)) {
+                Some(discovered) => {
+                    if discovered.package_manager.as_str() != repo.package_manager
+                        || discovered.detected_script != repo.detected_script
+                    {
+                        *repo = persistence::refresh_repository_detection(
+                            &state.pool,
+                            repo.id,
+                            discovered.package_manager.as_str(),
+                            discovered.detected_script.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| AppError::Persist(e.to_string()))?;
+                    }
+                }
+                None => missing_repository_ids.push(repo.id),
+            }
+        }
+    }
+
+    Ok(RefreshResult {
+        project,
+        repositories,
+        missing_repository_ids,
+        root_missing,
+    })
+}
+
+/// Deletes a project and everything under it (repositories, dependencies, profiles, launch
+/// history — all via existing ON DELETE CASCADE foreign keys). Rejects the deletion if any of
+/// the project's repositories are currently running or starting, checked against the live
+/// process tracker rather than only the database, so a stale frontend status cache can't lead
+/// to an orphaned OS process.
+#[tauri::command]
+pub async fn delete_project(state: State<'_, AppState>, project_id: i64) -> Result<(), AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    if repos.iter().any(|r| state.process_manager.is_running(r.id)) {
+        return Err(AppError::Persist(
+            "stop all repositories in this project before deleting".into(),
+        ));
+    }
+    persistence::delete_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// Repoints a project at a new root folder. Any repository that still exists at the same
+/// relative path under the new root is updated in place (id + user overrides preserved);
+/// anything else is picked up by the normal scan that follows. `root_path` and any remapped
+/// repos land together in one transaction (`apply_project_remap`), so a mid-failure never leaves
+/// them pointing at different locations.
+#[tauri::command]
+pub async fn update_project_path(
+    state: State<'_, AppState>,
+    project_id: i64,
+    new_root_path: String,
+) -> Result<ProjectWithRepos, AppError> {
+    let new_root = std::path::Path::new(&new_root_path);
+    if !new_root.is_dir() {
+        return Err(AppError::Scan(format!("not a directory: {new_root_path}")));
+    }
+
+    let project = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("project {project_id} not found")))?;
+    let old_root = std::path::Path::new(&project.root_path);
+
+    let existing = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let remap = compute_repo_remap(old_root, new_root, &existing);
+
+    persistence::apply_project_remap(&state.pool, project_id, &new_root_path, &remap)
+        .await
+        .map_err(|e| {
+            if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+                AppError::Persist("another project already uses this path".into())
+            } else {
+                AppError::Persist(e.to_string())
+            }
+        })?;
+
+    let repositories = discover_and_persist(&state.pool, project_id, new_root).await?;
+    let project = persistence::get_project(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("project {project_id} not found")))?;
+    Ok(ProjectWithRepos { project, repositories })
+}
+
 /// Manually adds a single repository by path, for cases the auto-scan doesn't reach (feedback
 /// #8: nested repos more than one level deep, or any other layout the heuristic misses).
 /// Rejects a directory without a `package.json`; otherwise behaves like a one-repo scan.
@@ -121,6 +252,46 @@ pub async fn add_repository_manual(
     persistence::list_repositories(&state.pool, project_id)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// Repoints a single repository at a new folder. Rejects outright if the folder has no
+/// `package.json` (no "save with a warning" path). Name is taken from the new folder (kept in
+/// sync with what it points to, matching how auto-scan already names repos); package manager and
+/// detected script are refreshed; every user override on the row is left untouched.
+#[tauri::command]
+pub async fn update_repository_path(
+    state: State<'_, AppState>,
+    repository_id: i64,
+    new_path: String,
+) -> Result<persistence::Repository, AppError> {
+    persistence::get_repository(&state.pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("repository {repository_id} not found")))?;
+
+    let dir = std::path::Path::new(&new_path);
+    if !dir.is_dir() {
+        return Err(AppError::Scan(format!("not a directory: {new_path}")));
+    }
+    let discovered = scanner::classify_repo_dir(dir, None)
+        .ok_or_else(|| AppError::Scan(format!("no package.json found in: {new_path}")))?;
+
+    persistence::update_repository_path(
+        &state.pool,
+        repository_id,
+        &discovered.path,
+        &discovered.name,
+        discovered.package_manager.as_str(),
+        discovered.detected_script.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        if e.as_database_error().map(|d| d.is_unique_violation()).unwrap_or(false) {
+            AppError::Persist("another repository in this project already uses this path".into())
+        } else {
+            AppError::Persist(e.to_string())
+        }
+    })
 }
 
 /// Recent projects for the Home screen (F1).
@@ -160,6 +331,40 @@ async fn discover_and_persist(
     persistence::list_repositories(pool, project_id)
         .await
         .map_err(|e| AppError::Persist(e.to_string()))
+}
+
+/// For each existing repo, checks whether a `package.json` still exists at the same path
+/// relative to `new_root` as the repo currently has relative to `old_root`. Repos that don't
+/// match (moved away, or the new root has a different layout) are simply absent from the
+/// result — left for the caller (and a normal Refresh) to leave untouched.
+///
+/// Caveat on Windows: `strip_prefix` does exact component comparison (case-sensitive apart from
+/// the drive letter), so if `old_root`/`new_root` ever differ from a repo's stored path in case
+/// or short-vs-long (8.3) form, that repo will silently fail to match and be excluded — which,
+/// combined with the subsequent full rescan, produces duplicate repo rows at the new location
+/// rather than a clean no-op.
+fn compute_repo_remap(
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+    repos: &[persistence::Repository],
+) -> Vec<persistence::RepoRemap> {
+    let mut out = Vec::new();
+    for repo in repos {
+        let repo_path = std::path::Path::new(&repo.path);
+        let Ok(relative) = repo_path.strip_prefix(old_root) else {
+            continue;
+        };
+        let candidate = new_root.join(relative);
+        if let Some(discovered) = scanner::classify_repo_dir(&candidate, Some(&repo.name)) {
+            out.push(persistence::RepoRemap {
+                repository_id: repo.id,
+                path: discovered.path,
+                package_manager: discovered.package_manager.as_str().to_string(),
+                detected_script: discovered.detected_script,
+            });
+        }
+    }
+    out
 }
 
 // ── Dependencies & sequential launch (F7/F8) ───────────────────────────────
@@ -1281,6 +1486,17 @@ async fn launch_spec_for(
         .map_err(|e| AppError::Persist(e.to_string()))?
         .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
 
+    // Fail with a clear message rather than letting the spawn itself hit the OS with a
+    // nonexistent cwd (which surfaces as an opaque "The directory name is invalid" error) — a
+    // repo's folder can vanish (moved/deleted outside the app) without the launcher noticing
+    // until the user tries to act on it.
+    if !std::path::Path::new(&repo.path).is_dir() {
+        return Err(AppError::Launch(format!(
+            "repository '{}' folder no longer exists: {}",
+            repo.name, repo.path
+        )));
+    }
+
     // Build the command tokens: a user override runs verbatim; otherwise derive from the
     // package manager + detected script (design.md §1.4).
     let mut tokens: Vec<String> = Vec::new();
@@ -1809,5 +2025,414 @@ mod project_tests {
         assert!(validate_project_name("").is_err());
         assert!(validate_project_name("   ").is_err());
         assert_eq!(validate_project_name("  My Project  ").unwrap(), "My Project");
+    }
+}
+
+#[cfg(test)]
+mod path_management_tests {
+    use super::*;
+
+    /// Creates a unique temp directory, cleaned up via `Drop`. Local to this module, matching
+    /// the existing per-module temp-dir helper convention already used by `scanner.rs` and this
+    /// file's `git_tests`.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "mrl-path-mgmt-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_pkg_json(dir: &std::path::Path, subpath: &str) {
+        let full = dir.join(subpath);
+        std::fs::create_dir_all(&full).expect("create repo dir");
+        std::fs::write(full.join("package.json"), r#"{"scripts": {"dev": "node ."}}"#)
+            .expect("write package.json");
+    }
+
+    fn fake_repo(id: i64, path: &std::path::Path, name: &str) -> persistence::Repository {
+        persistence::Repository {
+            id,
+            project_id: 1,
+            name: name.to_string(),
+            path: path.to_str().unwrap().to_string(),
+            package_manager: "npm".to_string(),
+            detected_script: None,
+            command: None,
+            args: None,
+            env_file: None,
+            enabled: 1,
+            favorite: 0,
+            visible_console: 0,
+            removed_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn remaps_repo_that_exists_at_the_same_relative_path() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        write_pkg_json(new.path(), "api");
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert_eq!(remap.len(), 1);
+        assert_eq!(remap[0].repository_id, 1);
+        assert_eq!(remap[0].path, new.path().join("api").display().to_string());
+    }
+
+    #[test]
+    fn excludes_repo_whose_new_location_has_no_package_json() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        std::fs::create_dir_all(new.path().join("api")).expect("create dir without package.json");
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert!(remap.is_empty());
+    }
+
+    #[test]
+    fn remaps_nested_relative_paths() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "services/notifications");
+        write_pkg_json(new.path(), "services/notifications");
+
+        let repo = fake_repo(1, &old.path().join("services/notifications"), "services/notifications");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert_eq!(remap.len(), 1);
+        assert_eq!(remap[0].path, new.path().join("services/notifications").display().to_string());
+    }
+
+    #[test]
+    fn handles_multiple_repositories_independently() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        write_pkg_json(old.path(), "web");
+        write_pkg_json(new.path(), "api"); // only "api" exists under the new root
+        std::fs::create_dir_all(new.path().join("web-renamed")).unwrap(); // "web" isn't here
+
+        let repos = vec![
+            fake_repo(1, &old.path().join("api"), "api"),
+            fake_repo(2, &old.path().join("web"), "web"),
+        ];
+        let remap = compute_repo_remap(old.path(), new.path(), &repos);
+
+        assert_eq!(remap.len(), 1, "only api should remap; web has no match under the new root");
+        assert_eq!(remap[0].repository_id, 1);
+    }
+
+    #[test]
+    fn excludes_repo_whose_relative_path_does_not_exist_under_new_root_at_all() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        write_pkg_json(old.path(), "api");
+        // new root has nothing under "api" at all, not even an empty directory.
+
+        let repo = fake_repo(1, &old.path().join("api"), "api");
+        let remap = compute_repo_remap(old.path(), new.path(), &[repo]);
+
+        assert!(remap.is_empty());
+    }
+
+    /// Create a fresh temp SQLite DB, migrated and ready to use. Mirrors persistence.rs's own
+    /// test helper — duplicated locally since that one is private to persistence.rs's test
+    /// module, matching this codebase's existing convention of small per-module test helpers.
+    async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let unique = format!(
+            "mrl_cmd_test_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let db_path = std::env::temp_dir().join(unique);
+        let pool = persistence::init_pool(&db_path).await.expect("init_pool failed");
+        persistence::run_migrations(&pool).await.expect("run_migrations failed");
+        (pool, db_path)
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[tokio::test]
+    async fn update_project_path_remaps_existing_and_picks_up_new_repos() {
+        let (pool, db_path) = setup_test_db().await;
+        let old_root = TempDir::new();
+        let new_root = TempDir::new();
+
+        write_pkg_json(old_root.path(), "api");
+        write_pkg_json(old_root.path(), "worker");
+        write_pkg_json(new_root.path(), "api"); // same relative path -> should remap
+        write_pkg_json(new_root.path(), "web"); // brand new under the new root -> picked up by scan
+        // note: no "worker" dir under new_root -> that repo can't remap and must be left untouched
+
+        let project = persistence::upsert_project(&pool, "Proj", old_root.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let old_api_path = old_root.path().join("api").to_str().unwrap().to_string();
+        let repo = persistence::upsert_repository(&pool, project.id, "api", &old_api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+        persistence::update_repository_config(&pool, repo.id, "npm", Some("npm run custom"), None, None)
+            .await
+            .expect("set command override failed");
+        let old_worker_path = old_root.path().join("worker").to_str().unwrap().to_string();
+        let worker_repo = persistence::upsert_repository(&pool, project.id, "worker", &old_worker_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert worker repository failed");
+
+        // Mirrors update_project_path's body, bypassing the Tauri command wrapper (which needs a
+        // real AppHandle/AppState) -- same approach this file's existing git_tests already use.
+        let existing = persistence::list_repositories(&pool, project.id).await.expect("list failed");
+        let remap = compute_repo_remap(old_root.path(), new_root.path(), &existing);
+        persistence::apply_project_remap(&pool, project.id, new_root.path().to_str().unwrap(), &remap)
+            .await
+            .expect("apply_project_remap failed");
+        let repositories = discover_and_persist(&pool, project.id, new_root.path())
+            .await
+            .expect("discover_and_persist failed");
+
+        let api = repositories.iter().find(|r| r.name == "api").expect("api must still be present");
+        assert_eq!(api.id, repo.id, "remapped repo must keep its original id");
+        assert_eq!(api.path, new_root.path().join("api").display().to_string());
+        assert_eq!(api.command.as_deref(), Some("npm run custom"), "override must survive the move");
+
+        let web = repositories.iter().find(|r| r.name == "web");
+        assert!(web.is_some(), "brand-new repo under the new root must be picked up by the scan");
+
+        let worker = repositories
+            .iter()
+            .find(|r| r.name == "worker")
+            .expect("worker must still be present (never auto-removed)");
+        assert_eq!(worker.id, worker_repo.id, "untouched repo must keep its original id");
+        assert_eq!(
+            worker.path, old_worker_path,
+            "repo that couldn't remap must be left at its old path, unchanged"
+        );
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn update_repository_path_command_rejects_missing_package_json_and_succeeds_otherwise() {
+        let (pool, db_path) = setup_test_db().await;
+        let old_dir = TempDir::new();
+        let new_dir = TempDir::new();
+        write_pkg_json(old_dir.path(), "api");
+
+        let project = persistence::upsert_project(&pool, "Proj", old_dir.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let old_api_path = old_dir.path().join("api").to_str().unwrap().to_string();
+        let repo = persistence::upsert_repository(&pool, project.id, "api", &old_api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert repository failed");
+
+        // No package.json here -> classify_repo_dir returns None -> the command must reject.
+        let empty_target = new_dir.path().join("empty");
+        std::fs::create_dir_all(&empty_target).unwrap();
+        assert!(
+            scanner::classify_repo_dir(&empty_target, None).is_none(),
+            "sanity check: this fixture must have no package.json"
+        );
+
+        // Valid target with a different leaf name -> name must update to match (mirrors what
+        // the update_repository_path command does internally: classify, then persist).
+        write_pkg_json(new_dir.path(), "billing");
+        let target = new_dir.path().join("billing");
+        let discovered = scanner::classify_repo_dir(&target, None).expect("target must classify as a repo");
+        let updated = persistence::update_repository_path(
+            &pool,
+            repo.id,
+            &discovered.path,
+            &discovered.name,
+            discovered.package_manager.as_str(),
+            discovered.detected_script.as_deref(),
+        )
+        .await
+        .expect("update_repository_path failed");
+
+        assert_eq!(updated.name, "billing", "name must follow the new folder");
+        assert_eq!(updated.path, target.display().to_string());
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    /// Mirrors `refresh_repositories`' body (bypassing the Tauri command wrapper, which needs a
+    /// real AppHandle/AppState — same approach `update_project_path`'s test above already uses)
+    /// against a real DB + real filesystem, returning what the command would return.
+    async fn run_refresh_repositories(
+        pool: &sqlx::SqlitePool,
+        project: &persistence::Project,
+    ) -> (Vec<persistence::Repository>, Vec<i64>, bool) {
+        let root_missing = !std::path::Path::new(&project.root_path).is_dir();
+        let mut repositories = persistence::list_repositories(pool, project.id).await.expect("list failed");
+        let mut missing_repository_ids = Vec::new();
+
+        if !root_missing {
+            for repo in repositories.iter_mut() {
+                let dir = std::path::Path::new(&repo.path);
+                match scanner::classify_repo_dir(dir, Some(&repo.name)) {
+                    Some(discovered) => {
+                        if discovered.package_manager.as_str() != repo.package_manager
+                            || discovered.detected_script != repo.detected_script
+                        {
+                            *repo = persistence::refresh_repository_detection(
+                                pool,
+                                repo.id,
+                                discovered.package_manager.as_str(),
+                                discovered.detected_script.as_deref(),
+                            )
+                            .await
+                            .expect("refresh_repository_detection failed");
+                        }
+                    }
+                    None => missing_repository_ids.push(repo.id),
+                }
+            }
+        }
+
+        (repositories, missing_repository_ids, root_missing)
+    }
+
+    #[tokio::test]
+    async fn refresh_repositories_updates_detection_and_ignores_removed_repos() {
+        let (pool, db_path) = setup_test_db().await;
+        let root = TempDir::new();
+        write_pkg_json(root.path(), "api");
+        write_pkg_json(root.path(), "gone");
+
+        let project = persistence::upsert_project(&pool, "Proj", root.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let api_path = root.path().join("api").to_str().unwrap().to_string();
+        let api = persistence::upsert_repository(&pool, project.id, "api", &api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert api failed");
+
+        // "removed" was deliberately removed by the user; its folder no longer exists on disk
+        // either, but that must not matter -- it's inactive and must be left out entirely.
+        let gone_path = root.path().join("gone").to_str().unwrap().to_string();
+        let removed = persistence::upsert_repository(&pool, project.id, "gone", &gone_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert removed failed");
+        persistence::remove_repository(&pool, removed.id).await.expect("remove_repository failed");
+        std::fs::remove_dir_all(root.path().join("gone")).expect("delete gone dir");
+
+        // Simulate a package manager change + a new script appearing since the last scan.
+        std::fs::write(root.path().join("api").join("pnpm-lock.yaml"), "").expect("write lockfile");
+        std::fs::write(
+            root.path().join("api").join("package.json"),
+            r#"{"scripts": {"start:dev": "node ."}}"#,
+        )
+        .expect("rewrite package.json");
+
+        let (repositories, missing, root_missing) = run_refresh_repositories(&pool, &project).await;
+
+        assert!(!root_missing);
+        assert!(missing.is_empty(), "no active repo should be reported missing");
+        assert_eq!(repositories.len(), 1, "removed repo must not reappear");
+        let api_after = repositories.iter().find(|r| r.id == api.id).expect("api must be present");
+        assert_eq!(api_after.package_manager, "pnpm", "package manager must be refreshed");
+        assert_eq!(api_after.detected_script.as_deref(), Some("start:dev"), "script must be refreshed");
+        assert_eq!(api_after.path, api_path, "path must be untouched by a detection refresh");
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn refresh_repositories_flags_missing_repo_without_mutating_it() {
+        let (pool, db_path) = setup_test_db().await;
+        let root = TempDir::new();
+        write_pkg_json(root.path(), "api");
+
+        let project = persistence::upsert_project(&pool, "Proj", root.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let api_path = root.path().join("api").to_str().unwrap().to_string();
+        let api = persistence::upsert_repository(&pool, project.id, "api", &api_path, "npm", Some("dev"), true)
+            .await
+            .expect("upsert api failed");
+
+        // Folder deleted outside the app -- not a deliberate Remove.
+        std::fs::remove_dir_all(root.path().join("api")).expect("delete api dir");
+
+        let (repositories, missing, root_missing) = run_refresh_repositories(&pool, &project).await;
+
+        assert!(!root_missing);
+        assert_eq!(missing, vec![api.id]);
+        let api_after = repositories.iter().find(|r| r.id == api.id).expect("api row must still be present");
+        assert_eq!(api_after.path, api_path, "row must be completely untouched, not deleted or repathed");
+        assert_eq!(api_after.package_manager, "npm");
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn refresh_repositories_reports_root_missing_and_skips_per_repo_checks() {
+        let (pool, db_path) = setup_test_db().await;
+        let root = TempDir::new();
+        write_pkg_json(root.path(), "api");
+
+        let project = persistence::upsert_project(&pool, "Proj", root.path().to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        persistence::upsert_repository(
+            &pool,
+            project.id,
+            "api",
+            root.path().join("api").to_str().unwrap(),
+            "npm",
+            Some("dev"),
+            true,
+        )
+        .await
+        .expect("upsert api failed");
+
+        // The whole project root is gone, not just one repo.
+        std::fs::remove_dir_all(root.path()).expect("delete project root");
+
+        let (repositories, missing, root_missing) = run_refresh_repositories(&pool, &project).await;
+
+        assert!(root_missing);
+        assert!(missing.is_empty(), "per-repo checks must be skipped when the root itself is missing");
+        assert_eq!(repositories.len(), 1, "repo row must still be returned, just unexamined");
+
+        pool.close().await;
+        cleanup_db(&db_path);
     }
 }

@@ -13,6 +13,7 @@ import {
   openRepoFolder,
   openRepoTerminal,
   openRepoVscode,
+  refreshRepositories,
   restartRepo,
   scanRepositories,
   setRepositoryEnabled,
@@ -24,6 +25,7 @@ import {
   setRepositoryFavorite,
   setRepositoryVisibleConsole,
   getSettings,
+  updateProjectPath,
 } from "@/api";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
@@ -68,7 +70,6 @@ export function Project({
   onRepositoriesReplaced: (repos: Repository[]) => void;
   onProfilesChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState<number | null>(null);
   const [rowError, setRowError] = useState<Record<number, string>>({});
   const [enabledBusy, setEnabledBusy] = useState<number | null>(null);
@@ -86,6 +87,12 @@ export function Project({
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
   const [addRepoBusy, setAddRepoBusy] = useState(false);
   const [addRepoError, setAddRepoError] = useState("");
+  const [rescanBusy, setRescanBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [missingRepoIds, setMissingRepoIds] = useState<number[]>([]);
+  const [rootMissing, setRootMissing] = useState(false);
+  const [locateBusy, setLocateBusy] = useState(false);
+  const [locateError, setLocateError] = useState("");
 
   // Fetched fresh on mount (not passed down from App.tsx) so a change made in Settings takes
   // effect the next time this view is opened, without needing an app restart.
@@ -122,6 +129,20 @@ export function Project({
     if (project) void loadGitStatus(project.id);
   }, [project?.id]);
 
+  // Lightweight stale-folder check: verifies the already-listed repos (and the project root)
+  // still exist on disk. Unlike Re-scan, this never discovers new repos and never un-removes a
+  // repo the user deliberately removed — see refreshRepos below. Runs automatically whenever
+  // this view opens for a project, so a folder deleted outside the app while viewing something
+  // else is caught the moment the user comes back, not only after a manual click.
+  useEffect(() => {
+    // Clear synchronously on project switch so the previous project's stale-folder banner/badges
+    // can't flash against the newly-opened project while the fresh check is still in flight.
+    setRootMissing(false);
+    setMissingRepoIds([]);
+    if (project) void refreshRepos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
+
   if (!project) {
     return (
       <div style={{ padding: "40px 48px" }}>
@@ -130,13 +151,48 @@ export function Project({
     );
   }
 
-  async function refresh() {
-    setBusy(true);
+  /** "Re-scan": full directory scan — picks up brand-new repos and un-removes a previously
+   * removed one if its folder still has a package.json. Kept as a distinct, explicit action
+   * (not the default "Refresh") since it can undo a deliberate Remove. */
+  async function rescan() {
+    setRescanBusy(true);
     try {
       onScanned(await scanRepositories(project!.id));
       await loadGitStatus(project!.id);
     } finally {
-      setBusy(false);
+      setRescanBusy(false);
+    }
+  }
+
+  /** "Refresh": lightweight check of the already-listed repos only — never discovers new repos,
+   * never un-removes a removed one. Flags repos/the project root that can't be found on disk
+   * without mutating them. */
+  async function refreshRepos() {
+    setRefreshBusy(true);
+    try {
+      const result = await refreshRepositories(project!.id);
+      onScanned({ project: result.project, repositories: result.repositories });
+      setMissingRepoIds(result.missingRepositoryIds);
+      setRootMissing(result.rootMissing);
+    } finally {
+      setRefreshBusy(false);
+    }
+  }
+
+  async function locateProjectRoot() {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setLocateError("");
+    setLocateBusy(true);
+    try {
+      const result = await updateProjectPath(project!.id, dir);
+      onScanned(result);
+      setRootMissing(false);
+      setMissingRepoIds([]);
+    } catch (err) {
+      setLocateError(String(err));
+    } finally {
+      setLocateBusy(false);
     }
   }
 
@@ -317,6 +373,31 @@ export function Project({
         <h1 style={{ fontSize: 32 }}>{project.name}</h1>
         <div className="mono text-muted" style={{ fontSize: 12 }}>{project.rootPath}</div>
       </div>
+
+      {rootMissing && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            marginBottom: 16,
+            borderRadius: "var(--radius-md)",
+            background: "var(--color-status-bad-bg)",
+            color: "var(--color-status-bad-fg)",
+            fontSize: 13,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            ⚠ This project's folder could not be found. It may have been moved or deleted.
+            {locateError && <> {locateError}</>}
+          </span>
+          <button type="button" className="btn btn-secondary" onClick={locateProjectRoot} disabled={locateBusy}>
+            {locateBusy ? "Locating…" : "Locate…"}
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }} className="text-muted">
@@ -446,8 +527,23 @@ export function Project({
           >
             {stopBusy ? "Stopping…" : "Stop All"}
           </button>
-          <button type="button" className="btn btn-secondary" onClick={refresh} disabled={busy}>
-            {busy ? "Scanning…" : "Refresh"}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={refreshRepos}
+            disabled={refreshBusy}
+            title="Check the current repository list against disk; never brings back a removed repo"
+          >
+            {refreshBusy ? "Refreshing…" : "Refresh"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={rescan}
+            disabled={rescanBusy}
+            title="Full directory scan; can rediscover new repos and un-remove a previously removed one"
+          >
+            {rescanBusy ? "Scanning…" : "Re-scan"}
           </button>
           <button
             type="button"
@@ -498,7 +594,8 @@ export function Project({
               {sortedRepos.map((r) => {
                 const repoStatus = statuses[r.id];
                 const status = repoStatus?.status ?? "stopped";
-                const launchable = r.command != null || r.detectedScript != null;
+                const missing = missingRepoIds.includes(r.id);
+                const launchable = (r.command != null || r.detectedScript != null) && !missing;
                 const busyRow = rowBusy === r.id;
                 const error = rowError[r.id];
                 const running = status === "running" || status === "starting";
@@ -512,7 +609,17 @@ export function Project({
                         onChange={(e) => toggleEnabled(r, e.target.checked)}
                       />
                     </td>
-                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      {r.name}
+                      {missing && (
+                        <span
+                          title="This repository's folder could not be found on disk"
+                          style={{ marginLeft: 6, fontWeight: 400, fontSize: 11, color: "var(--color-status-bad-fg)" }}
+                        >
+                          ⚠ folder not found
+                        </span>
+                      )}
+                    </td>
                     <td style={{ fontSize: 12 }}>
                       {gitByRepo[r.id] ? (
                         <span
