@@ -12,9 +12,12 @@ All notable changes to this project. Mirrors the in-app "What's new" dialog
 - Split Refresh (lightweight, respects removed repos) from Re-scan (full rediscovery)
 - Detect a missing project/repository folder and offer Locate… to repoint it
 - Feedback and GitHub links in the sidebar
-- Fixed "Execute All" mislabeling (renamed to "Execute")
+- Fixed "Execute All" mislabeling (renamed to "Execute", then "Launch Project"/"Launch")
 - Fixed log panel and its dropdowns rendering white in dark mode
 - Action-button icons shown in Settings, sidebar app icon/name enlarged
+- Renamed "Repository" to "Service" throughout the UI
+- Launch button now reads "Launch Project" only when every service is enabled, "Launch" otherwise
+- Documented and verified monorepo compatibility: multiple services can share one git repository
 
 ## 2026-08-03
 - Inline project rename
