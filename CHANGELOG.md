@@ -18,6 +18,7 @@ All notable changes to this project. Mirrors the in-app "What's new" dialog
 - Renamed "Repository" to "Service" throughout the UI
 - Launch button now reads "Launch Project" only when every service is enabled, "Launch" otherwise
 - Documented and verified monorepo compatibility: multiple services can share one git repository
+- "Open Terminal" reuses one Windows Terminal window as tabs, when Windows Terminal is installed
 
 ## 2026-08-03
 - Inline project rename
