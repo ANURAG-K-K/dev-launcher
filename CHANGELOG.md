@@ -3,6 +3,19 @@
 All notable changes to this project. Mirrors the in-app "What's new" dialog
 (`src/data/changelog.ts`).
 
+## 2026-08-29
+- Delete a project (with a guard against deleting while any of its repos are running)
+- Edit a project's root path — existing repos remap in place, keeping their id and overrides
+- Edit a single repository's path independently
+- Nested repository detection one level under a non-repo parent folder
+- Manually add a repository at any path via a folder picker
+- Split Refresh (lightweight, respects removed repos) from Re-scan (full rediscovery)
+- Detect a missing project/repository folder and offer Locate… to repoint it
+- Feedback and GitHub links in the sidebar
+- Fixed "Execute All" mislabeling (renamed to "Execute")
+- Fixed log panel and its dropdowns rendering white in dark mode
+- Action-button icons shown in Settings, sidebar app icon/name enlarged
+
 ## 2026-08-03
 - Inline project rename
 - Open repository in VS Code
