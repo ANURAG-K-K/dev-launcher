@@ -175,6 +175,35 @@ pub async fn delete_project(state: State<'_, AppState>, project_id: i64) -> Resu
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Count of currently-*running* (not merely enabled) services per project, for the sidebar's
+/// per-project running indicator. Read-only and derived entirely from existing state (the
+/// service list + the live process tracker) — no new persisted "running count" data. A project
+/// with zero repos, or an unknown project id, simply gets `0` rather than an error, since the
+/// sidebar calls this for every recent project in one batch and one stale/missing id shouldn't
+/// fail the whole batch.
+///
+/// No automated test: like `delete_project`'s running-repo guard, this depends on
+/// `ProcessManager::is_running`, which needs a real Tauri `AppHandle` that can't be constructed
+/// in a unit test — the same accepted gap, verified manually instead.
+#[tauri::command]
+pub async fn project_running_counts(
+    state: State<'_, AppState>,
+    project_ids: Vec<i64>,
+) -> Result<std::collections::HashMap<i64, i64>, AppError> {
+    let mut counts = std::collections::HashMap::new();
+    for project_id in project_ids {
+        let repos = persistence::list_repositories(&state.pool, project_id)
+            .await
+            .map_err(|e| AppError::Persist(e.to_string()))?;
+        let running = repos
+            .iter()
+            .filter(|r| state.process_manager.is_running(r.id))
+            .count() as i64;
+        counts.insert(project_id, running);
+    }
+    Ok(counts)
+}
+
 /// Repoints a project at a new root folder. Any repository that still exists at the same
 /// relative path under the new root is updated in place (id + user overrides preserved);
 /// anything else is picked up by the normal scan that follows. `root_path` and any remapped

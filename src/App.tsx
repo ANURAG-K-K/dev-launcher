@@ -12,7 +12,7 @@ import { History } from "@/views/History";
 import { ChangelogDialog } from "@/views/ChangelogDialog";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
-import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, pickDirectory, renameProject, restartRepo, updateProjectPath } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, pickDirectory, projectRunningCounts, renameProject, restartRepo, updateProjectPath } from "@/api";
 import { applyTheme } from "@/lib/theme";
 import { IconButton } from "@/components/IconButton";
 
@@ -81,6 +81,8 @@ function App() {
   const [renameError, setRenameError] = useState("");
   const [recentOpenError, setRecentOpenError] = useState<Record<number, string>>({});
   const [locatingProjectId, setLocatingProjectId] = useState<number | null>(null);
+  const [sidebarFilter, setSidebarFilter] = useState("");
+  const [runningCounts, setRunningCounts] = useState<Record<number, number>>({});
   const renameCancelledRef = useRef(false);
   const crashCountsRef = useRef<Record<number, number>>({});
   const [appVersion, setAppVersion] = useState("");
@@ -95,6 +97,25 @@ function App() {
   useEffect(() => {
     reposRef.current = repositories;
   }, [repositories]);
+
+  // Live mirror of recentProjects for the same reason (used inside the []-deps status listener).
+  const recentProjectsRef = useRef<ProjectT[]>([]);
+  useEffect(() => {
+    recentProjectsRef.current = recentProjects;
+  }, [recentProjects]);
+
+  /** Per-project count of currently-running services, for the sidebar's running indicator. */
+  async function refreshRunningCounts(projectIds: number[]) {
+    if (projectIds.length === 0) {
+      setRunningCounts({});
+      return;
+    }
+    try {
+      setRunningCounts(await projectRunningCounts(projectIds));
+    } catch {
+      /* ignore — indicator just stays at its last known state */
+    }
+  }
 
   /** Notify on crash (F15), gated by the live setting — read fresh so a toggle takes effect at once. */
   async function notifyCrash(repositoryId: number) {
@@ -160,6 +181,7 @@ function App() {
         void notifyCrash(payload.repositoryId);
         void maybeAutoRestart(payload.repositoryId);
       }
+      void refreshRunningCounts(recentProjectsRef.current.map((p) => p.id));
     }).then((fn) => {
       unlisten = fn;
     });
@@ -195,7 +217,9 @@ function App() {
 
   async function refreshRecent() {
     try {
-      setRecentProjects(await listRecentProjects());
+      const recent = await listRecentProjects();
+      setRecentProjects(recent);
+      void refreshRunningCounts(recent.map((p) => p.id));
     } catch {
       /* ignore */
     }
@@ -327,6 +351,10 @@ function App() {
     })();
   }, []);
 
+  const filteredRecent = sidebarFilter.trim()
+    ? recentProjects.filter((p) => p.name.toLowerCase().includes(sidebarFilter.trim().toLowerCase()))
+    : recentProjects;
+
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       <aside
@@ -375,10 +403,32 @@ function App() {
 
         <div style={{ flex: 1, overflow: "auto", borderTop: "2px solid var(--color-divider)", paddingBottom: 8 }}>
           <div className="sectiontitle" style={{ padding: "12px 16px 6px" }}>Recent</div>
+          {recentProjects.length > 0 && (
+            <div style={{ padding: "0 16px 8px" }}>
+              <input
+                type="text"
+                placeholder="Filter projects…"
+                value={sidebarFilter}
+                onChange={(e) => setSidebarFilter(e.target.value)}
+                style={{
+                  width: "100%",
+                  fontSize: 12,
+                  padding: "4px 8px",
+                  border: "1px solid var(--color-divider)",
+                  background: "var(--color-bg)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--color-text)",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          )}
           {recentProjects.length === 0 ? (
             <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No recent projects</div>
+          ) : filteredRecent.length === 0 ? (
+            <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No projects match "{sidebarFilter}"</div>
           ) : (
-            recentProjects.map((p) =>
+            filteredRecent.map((p) =>
               renamingProjectId === p.id ? (
                 <div key={p.id} style={{ padding: "4px 16px" }}>
                   <input
@@ -409,10 +459,13 @@ function App() {
                   <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
                     <button
                       className={cn("navitem", project?.id === p.id && "navitem-active")}
-                      title={p.rootPath}
+                      title={runningCounts[p.id] > 0 ? `${p.rootPath} — ${runningCounts[p.id]} running` : p.rootPath}
                       onClick={() => openRecent(p)}
                       style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
                     >
+                      {runningCounts[p.id] > 0 && (
+                        <span style={{ color: "var(--color-status-good-fg)", marginRight: 5 }}>●</span>
+                      )}
                       {p.name}
                     </button>
                     <IconButton title="Rename" onClick={() => startRename(p)}>
