@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-/// Package manager detected for a discovered repository, by lockfile presence.
+/// Toolchain detected for a discovered repository, by lockfile/marker presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PackageManager {
@@ -23,6 +23,12 @@ pub enum PackageManager {
     Pnpm,
     Yarn,
     Bun,
+    Pip,
+    Poetry,
+    Uv,
+    Pipenv,
+    Cargo,
+    Dotnet,
 }
 
 impl PackageManager {
@@ -32,6 +38,31 @@ impl PackageManager {
             PackageManager::Pnpm => "pnpm",
             PackageManager::Yarn => "yarn",
             PackageManager::Bun => "bun",
+            PackageManager::Pip => "pip",
+            PackageManager::Poetry => "poetry",
+            PackageManager::Uv => "uv",
+            PackageManager::Pipenv => "pipenv",
+            PackageManager::Cargo => "cargo",
+            PackageManager::Dotnet => "dotnet",
+        }
+    }
+
+    /// Parses a persisted `package_manager` string back into its enum value. Used by
+    /// `commands.rs` to regenerate the default command for a repository row (design.md
+    /// §4) and to validate `update_repository_config`'s input.
+    pub fn parse(s: &str) -> Option<PackageManager> {
+        match s {
+            "npm" => Some(PackageManager::Npm),
+            "pnpm" => Some(PackageManager::Pnpm),
+            "yarn" => Some(PackageManager::Yarn),
+            "bun" => Some(PackageManager::Bun),
+            "pip" => Some(PackageManager::Pip),
+            "poetry" => Some(PackageManager::Poetry),
+            "uv" => Some(PackageManager::Uv),
+            "pipenv" => Some(PackageManager::Pipenv),
+            "cargo" => Some(PackageManager::Cargo),
+            "dotnet" => Some(PackageManager::Dotnet),
+            _ => None,
         }
     }
 }
@@ -95,6 +126,12 @@ fn build_command(manager: PackageManager, script: &str) -> String {
         PackageManager::Pnpm => format!("pnpm run {script}"),
         PackageManager::Bun => format!("bun run {script}"),
         PackageManager::Yarn => format!("yarn {script}"),
+        PackageManager::Pip => format!("python -m pip install && python {script}"),
+        PackageManager::Poetry => format!("poetry run python {script}"),
+        PackageManager::Uv => format!("uv run {script}"),
+        PackageManager::Pipenv => format!("pipenv run {script}"),
+        PackageManager::Cargo => format!("cargo run --release -- {script}"),
+        PackageManager::Dotnet => format!("dotnet run -- {script}"),
     }
 }
 
@@ -403,5 +440,39 @@ mod tests {
         let repos = scan_project_root(tmp.path()).unwrap();
         let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["real-repo"]);
+    }
+
+    #[test]
+    fn package_manager_as_str_covers_every_variant() {
+        assert_eq!(PackageManager::Pip.as_str(), "pip");
+        assert_eq!(PackageManager::Poetry.as_str(), "poetry");
+        assert_eq!(PackageManager::Uv.as_str(), "uv");
+        assert_eq!(PackageManager::Pipenv.as_str(), "pipenv");
+        assert_eq!(PackageManager::Cargo.as_str(), "cargo");
+        assert_eq!(PackageManager::Dotnet.as_str(), "dotnet");
+    }
+
+    #[test]
+    fn package_manager_parse_round_trips_every_as_str_value() {
+        let all = [
+            PackageManager::Npm,
+            PackageManager::Pnpm,
+            PackageManager::Yarn,
+            PackageManager::Bun,
+            PackageManager::Pip,
+            PackageManager::Poetry,
+            PackageManager::Uv,
+            PackageManager::Pipenv,
+            PackageManager::Cargo,
+            PackageManager::Dotnet,
+        ];
+        for pm in all {
+            assert_eq!(PackageManager::parse(pm.as_str()), Some(pm));
+        }
+    }
+
+    #[test]
+    fn package_manager_parse_rejects_unknown_string() {
+        assert_eq!(PackageManager::parse("not-a-real-toolchain"), None);
     }
 }
