@@ -707,6 +707,40 @@ pub async fn open_repo_folder(
     }
 }
 
+/// Lists `.env`-style files sitting directly in a service's own folder (not recursive), sorted,
+/// so the Env file field can offer them as a dropdown instead of requiring the user to type a
+/// path. A plain `&SqlitePool` function for the same testability reason as
+/// `export_profile_impl`/`import_profile_impl` - it only needs the repository's path, never the
+/// process manager.
+async fn list_env_files_impl(pool: &sqlx::SqlitePool, repository_id: i64) -> Result<Vec<String>, AppError> {
+    let repo = persistence::get_repository(pool, repository_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?
+        .ok_or_else(|| AppError::Persist(format!("repository {repository_id} not found")))?;
+
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&repo.path) {
+        for entry in entries.flatten() {
+            if !entry.path().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".env" || name.starts_with(".env.") {
+                files.push(name);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Lists `.env`-style files in a service's own folder, for the Env file dropdown (feedback:
+/// env file should be selectable, not typed).
+#[tauri::command]
+pub async fn list_env_files(state: State<'_, AppState>, repository_id: i64) -> Result<Vec<String>, AppError> {
+    list_env_files_impl(&state.pool, repository_id).await
+}
+
 /// Open an external terminal at the repository's working directory (F12). An in-app
 /// "integrated" terminal is deferred past v1 (R6) — this always opens an external window, in
 /// the shell chosen by `Settings.terminal_shell`.
@@ -2936,6 +2970,108 @@ mod profile_export_import_tests {
         assert_eq!(second.profile.name, "Backend (imported 2)");
 
         let _ = std::fs::remove_file(&json_path);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+}
+
+#[cfg(test)]
+mod list_env_files_tests {
+    use super::*;
+
+    async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let unique = format!(
+            "mrl_envfiles_test_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let db_path = std::env::temp_dir().join(unique);
+        let pool = persistence::init_pool(&db_path).await.expect("init_pool failed");
+        persistence::run_migrations(&pool).await.expect("run_migrations failed");
+        (pool, db_path)
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn temp_repo_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mrl-envfiles-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn lists_only_dotenv_style_files_sorted_and_ignores_the_rest() {
+        let (pool, db_path) = setup_test_db().await;
+        let repo_dir = temp_repo_dir();
+
+        std::fs::write(repo_dir.join(".env.production"), "").unwrap();
+        std::fs::write(repo_dir.join(".env"), "").unwrap();
+        std::fs::write(repo_dir.join(".env.local"), "").unwrap();
+        std::fs::write(repo_dir.join("package.json"), "{}").unwrap();
+        std::fs::write(repo_dir.join("README.md"), "").unwrap();
+        // A directory whose NAME matches the pattern too - must still be excluded by the is_file() check.
+        std::fs::create_dir_all(repo_dir.join(".env.test")).unwrap();
+
+        let project = persistence::upsert_project(&pool, "Proj", repo_dir.to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let repo = persistence::upsert_repository(
+            &pool,
+            project.id,
+            "api",
+            repo_dir.to_str().unwrap(),
+            "npm",
+            Some("dev"),
+            true,
+        )
+        .await
+        .expect("upsert repository failed");
+
+        let files = list_env_files_impl(&pool, repo.id).await.expect("list_env_files_impl failed");
+
+        assert_eq!(files, vec![".env", ".env.local", ".env.production"]);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn returns_empty_list_when_repository_folder_has_no_env_files() {
+        let (pool, db_path) = setup_test_db().await;
+        let repo_dir = temp_repo_dir();
+        std::fs::write(repo_dir.join("package.json"), "{}").unwrap();
+
+        let project = persistence::upsert_project(&pool, "Proj", repo_dir.to_str().unwrap())
+            .await
+            .expect("upsert project failed");
+        let repo = persistence::upsert_repository(
+            &pool,
+            project.id,
+            "api",
+            repo_dir.to_str().unwrap(),
+            "npm",
+            Some("dev"),
+            true,
+        )
+        .await
+        .expect("upsert repository failed");
+
+        let files = list_env_files_impl(&pool, repo.id).await.expect("list_env_files_impl failed");
+        assert!(files.is_empty());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
         pool.close().await;
         cleanup_db(&db_path);
     }

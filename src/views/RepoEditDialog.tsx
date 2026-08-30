@@ -1,5 +1,5 @@
-import { useState, type CSSProperties } from "react";
-import { pickDirectory, setRepositoryDependencies, updateRepositoryConfig, updateRepositoryPath } from "@/api";
+import { useEffect, useState, type CSSProperties } from "react";
+import { listEnvFiles, pickDirectory, pickEnvFilePath, setRepositoryDependencies, updateRepositoryConfig, updateRepositoryPath } from "@/api";
 import type { DependencyEdge, Repository } from "@/types";
 
 const INPUT_STYLE: CSSProperties = {
@@ -56,6 +56,8 @@ export function RepoEditDialog({
   const [command, setCommand] = useState(repo.command ?? "");
   const [args, setArgs] = useState(repo.args ?? "");
   const [envFile, setEnvFile] = useState(repo.envFile ?? "");
+  const [envFiles, setEnvFiles] = useState<string[]>([]);
+  const [envMode, setEnvMode] = useState<"none" | "discovered" | "custom">(repo.envFile ? "custom" : "none");
   const [dependsOn, setDependsOn] = useState<number[]>(
     dependencies.filter((d) => d.repositoryId === repo.id).map((d) => d.dependsOnRepositoryId),
   );
@@ -67,6 +69,20 @@ export function RepoEditDialog({
   const [pathError, setPathError] = useState("");
 
   const otherRepos = repositories.filter((r) => r.id !== repo.id);
+
+  useEffect(() => {
+    listEnvFiles(repo.id)
+      .then((files) => {
+        setEnvFiles(files);
+        if (repo.envFile && files.includes(repo.envFile)) {
+          setEnvMode("discovered");
+        }
+      })
+      .catch(() => {
+        // Best-effort - the dropdown just stays empty; Custom path still works.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo.id]);
 
   function toggleDependsOn(id: number, checked: boolean) {
     setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
@@ -185,13 +201,53 @@ export function RepoEditDialog({
           />
         </Field>
 
-        <Field label="Env file" helper="Path to a .env file (absolute or relative to the repo).">
-          <input
+        <Field label="Env file" helper="Pick one detected in this service's folder, or choose Custom path for one elsewhere.">
+          <select
             className="mono"
             style={INPUT_STYLE}
-            value={envFile}
-            onChange={(e) => setEnvFile(e.target.value)}
-          />
+            value={envMode === "custom" ? "__custom__" : envMode === "discovered" ? envFile : ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "__custom__") {
+                setEnvMode("custom");
+              } else if (v === "") {
+                setEnvMode("none");
+                setEnvFile("");
+              } else {
+                setEnvMode("discovered");
+                setEnvFile(v);
+              }
+            }}
+          >
+            <option value="">(None)</option>
+            {envFiles.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+            <option value="__custom__">Custom path…</option>
+          </select>
+          {envMode === "custom" && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+              <input
+                className="mono"
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                value={envFile}
+                onChange={(e) => setEnvFile(e.target.value)}
+                placeholder="Absolute or relative path"
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={async () => {
+                  const picked = await pickEnvFilePath();
+                  if (picked) setEnvFile(picked);
+                }}
+              >
+                Browse…
+              </button>
+            </div>
+          )}
         </Field>
 
         <Field label="Depends on" helper="Services that must be started before this one.">

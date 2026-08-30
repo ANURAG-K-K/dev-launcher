@@ -127,6 +127,15 @@ export const exportProfile = (profileId: number, filePath: string) =>
 export const importProfile = (projectId: number, filePath: string) =>
   invoke<ImportProfileResult>("import_profile", { projectId, filePath });
 
+export const listEnvFiles = (repositoryId: number) =>
+  invoke<string[]>("list_env_files", { repositoryId });
+
+/** Native file picker for a custom env file location; returns the chosen path, or null if cancelled. */
+export async function pickEnvFilePath(): Promise<string | null> {
+  const res = await openDialog({ directory: false, multiple: false });
+  return typeof res === "string" ? res : null;
+}
+
 export const openRepoFolder = (repositoryId: number) =>
   invoke<void>("open_repo_folder", { repositoryId });
 

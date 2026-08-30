@@ -85,6 +85,7 @@ pub fn run() {
             commands::set_repository_visible_console,
             commands::remove_repository,
             commands::open_repo_folder,
+            commands::list_env_files,
             commands::open_repo_terminal,
             commands::open_repo_vscode,
             commands::git_status_project,
