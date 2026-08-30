@@ -30,6 +30,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Export/import launch profiles as JSON, for sharing across machines or teammates",
       "Fixed imported profile not taking effect until switching profiles away and back",
       "Fixed importing a profile from an unrelated project silently creating an empty one - now rejected with a clear error",
+      "Partial-import \"some services not found\" notice is now a popup suggesting Re-scan, instead of easy-to-miss inline text",
     ],
   },
   {

@@ -25,6 +25,7 @@ All notable changes to this project. Mirrors the in-app "What's new" dialog
 - Export/import launch profiles as JSON, for sharing across machines or teammates
 - Fixed imported profile not taking effect until switching profiles away and back
 - Fixed importing a profile from an unrelated project silently creating an empty one - now rejected with a clear error
+- Partial-import "some services not found" notice is now a popup suggesting Re-scan, instead of easy-to-miss inline text
 
 ## 2026-08-03
 - Inline project rename
