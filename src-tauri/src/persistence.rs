@@ -1250,4 +1250,56 @@ mod tests {
         pool.close().await;
         cleanup(&path);
     }
+
+    #[tokio::test]
+    async fn widened_package_manager_check_accepts_non_node_toolchains() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj")
+            .await
+            .expect("upsert project failed");
+
+        for pm in ["pip", "poetry", "uv", "pipenv", "cargo", "dotnet"] {
+            let name = format!("repo-{pm}");
+            let repo_path = format!("/repos/proj/{pm}");
+            upsert_repository(&pool, project.id, &name, &repo_path, pm, None, true)
+                .await
+                .unwrap_or_else(|e| panic!("upsert_repository must accept package_manager '{pm}': {e}"));
+        }
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn rescanning_preserves_command_override_for_non_node_repo() {
+        let (pool, path) = setup_test_db().await;
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj")
+            .await
+            .expect("upsert project failed");
+        let repo = upsert_repository(&pool, project.id, "svc", "/repos/proj/svc", "cargo", None, true)
+            .await
+            .expect("initial upsert_repository failed");
+
+        // Simulate a user setting a command override via update_repository_config.
+        update_repository_config(&pool, repo.id, "cargo", Some("cargo run --release"), None, None)
+            .await
+            .expect("update_repository_config failed");
+
+        // Rescan: re-upsert with the same detection result (nothing changed on disk).
+        let rescanned = upsert_repository(&pool, project.id, "svc", "/repos/proj/svc", "cargo", None, true)
+            .await
+            .expect("re-upsert failed");
+
+        assert_eq!(rescanned.id, repo.id);
+        assert_eq!(
+            rescanned.command.as_deref(),
+            Some("cargo run --release"),
+            "command override must survive rescanning a non-Node repository"
+        );
+
+        pool.close().await;
+        cleanup(&path);
+    }
 }
