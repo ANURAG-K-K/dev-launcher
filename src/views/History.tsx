@@ -38,7 +38,7 @@ export function History({ project }: { project: Project | null }) {
       </div>
 
       {records.length === 0 ? (
-        <p className="text-muted">No launches yet — use Launch Project on the Project screen.</p>
+        <p className="text-muted">No launches yet - use Launch Project on the Project screen.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {records.map((r) => (

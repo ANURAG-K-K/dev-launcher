@@ -113,11 +113,11 @@ function App() {
     try {
       setRunningCounts(await projectRunningCounts(projectIds));
     } catch {
-      /* ignore — indicator just stays at its last known state */
+      /* ignore - indicator just stays at its last known state */
     }
   }
 
-  /** Notify on crash (F15), gated by the live setting — read fresh so a toggle takes effect at once. */
+  /** Notify on crash (F15), gated by the live setting - read fresh so a toggle takes effect at once. */
   async function notifyCrash(repositoryId: number) {
     let settings;
     try {
@@ -253,7 +253,7 @@ function App() {
   function startRename(p: ProjectT) {
     // Cleared unconditionally on every edit-start (not just consumed-and-reset on the blur
     // path in saveRename): correctness can't depend on the browser firing `blur` when a
-    // focused element unmounts — Chromium/WebView2 (this app's actual runtime) doesn't.
+    // focused element unmounts - Chromium/WebView2 (this app's actual runtime) doesn't.
     renameCancelledRef.current = false;
     setRenamingProjectId(p.id);
     setRenameValue(p.name);
@@ -336,7 +336,7 @@ function App() {
   }, []);
 
   // Open at a standard size scaled to the screen (~85%, capped), centered. The user can then
-  // freely resize or maximize — no aspect-ratio snapping. Min size is set in tauri.conf.json.
+  // freely resize or maximize - no aspect-ratio snapping. Min size is set in tauri.conf.json.
   useEffect(() => {
     const appWindow = getCurrentWindow();
     (async () => {
@@ -346,7 +346,7 @@ function App() {
         await appWindow.setSize(new LogicalSize(w, h));
         await appWindow.center();
       } catch {
-        /* ignore — fall back to the configured default size */
+        /* ignore - fall back to the configured default size */
       }
     })();
   }, []);
@@ -452,7 +452,7 @@ function App() {
                     }}
                     onBlur={() => {
                       // Blur with an empty name means the user moved on, not that they
-                      // rejected a submission — cancel silently instead of showing an
+                      // rejected a submission - cancel silently instead of showing an
                       // error the user can no longer see (focus has already left).
                       if (!renameValue.trim()) cancelRename();
                       else void saveRename(p.id);
@@ -469,7 +469,7 @@ function App() {
                   <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
                     <button
                       className={cn("navitem", project?.id === p.id && "navitem-active")}
-                      title={runningCounts[p.id] > 0 ? `${p.rootPath} — ${runningCounts[p.id]} running` : p.rootPath}
+                      title={runningCounts[p.id] > 0 ? `${p.rootPath} - ${runningCounts[p.id]} running` : p.rootPath}
                       onClick={() => openRecent(p)}
                       style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
                     >
@@ -497,7 +497,7 @@ function App() {
                         gap: 6,
                       }}
                     >
-                      <span>⚠ Folder not found — the project may have been moved or deleted.</span>
+                      <span>⚠ Folder not found - the project may have been moved or deleted.</span>
                       <button
                         type="button"
                         className="btn btn-secondary"

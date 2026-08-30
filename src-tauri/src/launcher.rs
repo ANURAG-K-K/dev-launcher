@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 /// nodes appear in `nodes` (stable).
 ///
 /// Edges whose endpoints are not BOTH present in `nodes` are ignored (a dependency on a node
-/// outside the set does not constrain ordering here — the caller handles "blocked" repos).
+/// outside the set does not constrain ordering here - the caller handles "blocked" repos).
 ///
 /// Returns `Err(cyclic)` with the node ids that remain in a cycle (non-zero in-degree after Kahn's
 /// algorithm drains) if the graph is not a DAG.
@@ -33,10 +33,10 @@ pub fn topological_order(nodes: &[i64], edges: &[(i64, i64)]) -> Result<Vec<i64>
             continue; // self-edge: unsatisfiable, treated as no constraint, not a cycle
         }
         if !node_set.contains(&dependent) || !node_set.contains(&depends_on) {
-            continue; // dependency outside the launch set — ignore
+            continue; // dependency outside the launch set - ignore
         }
         if !seen_edges.insert((dependent, depends_on)) {
-            continue; // duplicate edge — don't inflate in-degree
+            continue; // duplicate edge - don't inflate in-degree
         }
         *in_degree.get_mut(&dependent).unwrap() += 1;
         dependents.get_mut(&depends_on).unwrap().push(dependent);
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn edge_to_unknown_node_is_ignored() {
         let nodes = [1, 2];
-        // 1 depends on 99, which isn't in `nodes` — should not panic or constrain ordering.
+        // 1 depends on 99, which isn't in `nodes` - should not panic or constrain ordering.
         let edges = [(1, 99)];
         let result = topological_order(&nodes, &edges).unwrap();
         assert_eq!(result, vec![1, 2]);

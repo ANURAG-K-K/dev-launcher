@@ -49,7 +49,7 @@ pub struct Repository {
     pub updated_at: String,
 }
 
-// Note: FromRow maps by the Rust field name to the DB column (both snake_case) — the serde
+// Note: FromRow maps by the Rust field name to the DB column (both snake_case) - the serde
 // rename_all="camelCase" only affects JSON serialization to the frontend, not FromRow.
 
 /// One repository's refreshed location/detection after a project root move, ready to persist.
@@ -320,7 +320,7 @@ pub async fn update_launch_history_item_exit(
 }
 
 /// Sweep launches left `running` by a previous session (the app closed, so those OS processes are
-/// gone). Mark their items `stopped` — not `crashed` — since a normal app quit stops them, and we
+/// gone). Mark their items `stopped` - not `crashed` - since a normal app quit stops them, and we
 /// can't distinguish a clean quit from a crash here (F13, startup reconciliation).
 pub async fn reconcile_stale_launches(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -721,7 +721,7 @@ pub async fn set_repository_enabled(
 
 /// Updates a repository's location and refreshed detection fields (path/name/package
 /// manager/detected script). Deliberately leaves `command`, `args`, `env_file`, `enabled`,
-/// `favorite`, and `visible_console` untouched — same "preserve user overrides" contract
+/// `favorite`, and `visible_console` untouched - same "preserve user overrides" contract
 /// `upsert_repository` already documents.
 pub async fn update_repository_path(
     pool: &SqlitePool,
@@ -1057,7 +1057,7 @@ mod tests {
         assert_eq!(reopened.id, created.id);
         assert_eq!(
             reopened.name, "My Custom Name",
-            "a rename must survive reopening the project — this is the bug this task fixes"
+            "a rename must survive reopening the project - this is the bug this task fixes"
         );
     }
 

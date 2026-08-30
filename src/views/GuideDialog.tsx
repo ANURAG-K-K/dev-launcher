@@ -21,7 +21,7 @@ const SECTIONS: { title: string; body: string }[] = [
   },
   {
     title: "6. History",
-    body: "Every launch is recorded — see past runs, their outcomes, and exit codes in the History view.",
+    body: "Every launch is recorded - see past runs, their outcomes, and exit codes in the History view.",
   },
 ];
 

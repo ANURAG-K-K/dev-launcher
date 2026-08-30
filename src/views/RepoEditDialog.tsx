@@ -146,7 +146,7 @@ export function RepoEditDialog({
         style={{ width: "100%", maxWidth: 480, background: "var(--color-bg)", padding: 24 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 18 }}>Edit — {name}</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 18 }}>Edit - {name}</h2>
 
         <Field label="Path" helper="Folder this service launches from.">
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

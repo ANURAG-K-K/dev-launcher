@@ -1,5 +1,5 @@
 //! Process-local, in-memory cache for per-repository git status (spec 2026-07-31). Not
-//! persisted to disk and not shared across app launches — it exists only to avoid redundant
+//! persisted to disk and not shared across app launches - it exists only to avoid redundant
 //! `git` subprocess spawns when the frontend re-checks status shortly after the last check
 //! (e.g. switching back to the Project tab).
 

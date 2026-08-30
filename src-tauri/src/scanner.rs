@@ -10,7 +10,7 @@
 //! deeper for repos nested inside it (`parent -> sub_dir -> repo`), so a grouping folder such
 //! as `services/` doesn't hide the repos underneath it. Nested repos are named
 //! `sub_dir/repo` to disambiguate same-named repos under different groups. Nothing past that
-//! one extra level is scanned — a repo the auto-scan still doesn't find can be added manually
+//! one extra level is scanned - a repo the auto-scan still doesn't find can be added manually
 //! (`classify_repo_dir`, used by the `add_repository_manual` command).
 
 use std::path::Path;
@@ -77,7 +77,7 @@ fn detect_package_manager(repo_dir: &Path) -> PackageManager {
 
 /// Parses `package.json` and returns the first known script key present in `scripts`.
 /// Malformed JSON or a missing/non-object `scripts` field yields `None` rather than an error
-/// (design.md §1.3/§1.5 — a bad package.json must not fail the whole scan).
+/// (design.md §1.3/§1.5 - a bad package.json must not fail the whole scan).
 fn detect_script(pkg_json_path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(pkg_json_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&contents).ok()?;

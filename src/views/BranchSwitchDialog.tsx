@@ -17,7 +17,7 @@ function displayBranch(branch: string): string {
 
 /**
  * Modal to switch a repository's branch (spec 2026-08-02). Branch list is fetched fresh on
- * every open/refresh — never cached, unlike the git-status cache. The actual switch call is
+ * every open/refresh - never cached, unlike the git-status cache. The actual switch call is
  * owned by the parent (`onSwitch`) so it can route through the existing per-repo `runAction`
  * busy-state gate shared with Fetch/Pull/Start/Stop.
  */
@@ -104,7 +104,7 @@ export function BranchSwitchDialog({
         style={{ width: "100%", maxWidth: 420, background: "var(--color-bg)", padding: 24 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 6 }}>Switch branch — {repo.name}</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 6 }}>Switch branch - {repo.name}</h2>
         <p className="text-muted" style={{ fontSize: 12, marginBottom: 16 }}>
           Current: {displayBranch(currentStatus.branch)}
         </p>

@@ -117,7 +117,7 @@ export function Project({
       });
   }, []);
 
-  // The execute summary is a one-shot outcome, not live state — auto-dismiss it so it can't go
+  // The execute summary is a one-shot outcome, not live state - auto-dismiss it so it can't go
   // stale as repos are started/stopped individually (the live "running" count below is the truth).
   useEffect(() => {
     if (!executeResult) return;
@@ -136,7 +136,7 @@ export function Project({
 
   // Lightweight stale-folder check: verifies the already-listed repos (and the project root)
   // still exist on disk. Unlike Re-scan, this never discovers new repos and never un-removes a
-  // repo the user deliberately removed — see refreshRepos below. Runs automatically whenever
+  // repo the user deliberately removed - see refreshRepos below. Runs automatically whenever
   // this view opens for a project, so a folder deleted outside the app while viewing something
   // else is caught the moment the user comes back, not only after a manual click.
   useEffect(() => {
@@ -157,7 +157,7 @@ export function Project({
     );
   }
 
-  /** "Re-scan": full directory scan — picks up brand-new repos and un-removes a previously
+  /** "Re-scan": full directory scan - picks up brand-new repos and un-removes a previously
    * removed one if its folder still has a package.json. Kept as a distinct, explicit action
    * (not the default "Refresh") since it can undo a deliberate Remove. */
   async function rescan() {
@@ -170,7 +170,7 @@ export function Project({
     }
   }
 
-  /** "Refresh": lightweight check of the already-listed repos only — never discovers new repos,
+  /** "Refresh": lightweight check of the already-listed repos only - never discovers new repos,
    * never un-removes a removed one. Flags repos/the project root that can't be found on disk
    * without mutating them. */
   async function refreshRepos() {
@@ -468,7 +468,7 @@ export function Project({
                 color: "var(--color-text)",
               }}
             >
-              <option value="">— No profile —</option>
+              <option value="">- No profile -</option>
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -754,11 +754,11 @@ export function Project({
                           )}
                         </span>
                       ) : (
-                        <span className="text-muted">—</span>
+                        <span className="text-muted">-</span>
                       )}
                     </td>
                     <td className="mono text-muted" style={{ fontSize: 12 }}>
-                      {running && repoStatus?.pid != null ? repoStatus.pid : "—"}
+                      {running && repoStatus?.pid != null ? repoStatus.pid : "-"}
                     </td>
                     <td>
                       <span className="tag tag-neutral">{r.packageManager}</span>
@@ -792,8 +792,8 @@ export function Project({
                           <IconButton
                             title={
                               r.visibleConsole === 1
-                                ? "Visible console (on) — launches in a window you can type into; logs aren't captured"
-                                : "Visible console (off) — launches in the background with captured logs"
+                                ? "Visible console (on) - launches in a window you can type into; logs aren't captured"
+                                : "Visible console (off) - launches in the background with captured logs"
                             }
                             color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
                             onClick={() => toggleVisibleConsole(r)}

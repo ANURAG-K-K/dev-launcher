@@ -1,4 +1,4 @@
-//! Multi-Repo Dev Launcher — Rust backend entry point.
+//! Multi-Repo Dev Launcher - Rust backend entry point.
 //!
 //! Module layout mirrors the architecture doc (docs/architecture.md §3):
 //!   - `scanner`         repository discovery + script detection (F2/F3)

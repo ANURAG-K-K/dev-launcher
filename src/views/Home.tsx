@@ -33,7 +33,7 @@ export function Home({
   function startRename(p: Project) {
     // Cleared unconditionally on every edit-start (not just consumed-and-reset on the blur
     // path in saveRename): correctness can't depend on the browser firing `blur` when a
-    // focused element unmounts — Chromium/WebView2 (this app's actual runtime) doesn't.
+    // focused element unmounts - Chromium/WebView2 (this app's actual runtime) doesn't.
     renameCancelledRef.current = false;
     setRenamingId(p.id);
     setRenameValue(p.name);
@@ -169,7 +169,7 @@ export function Home({
                         }}
                         onBlur={() => {
                           // Blur with an empty name means the user moved on, not that they
-                          // rejected a submission — cancel silently instead of showing an
+                          // rejected a submission - cancel silently instead of showing an
                           // error the user can no longer see (focus has already left).
                           if (!renameValue.trim()) cancelRename();
                           else void saveRename(p.id);

@@ -102,7 +102,7 @@ pub async fn scan_repositories(
 
 /// Lightweight check-and-refresh for the already-listed (active, non-removed) repositories of a
 /// project: verifies each one's folder + `package.json` still exist and re-detects its package
-/// manager/script if so, but — unlike `scan_repositories` ("Re-scan") — never discovers new
+/// manager/script if so, but - unlike `scan_repositories` ("Re-scan") - never discovers new
 /// repos and never un-removes a repo the user deliberately removed. A repo whose folder can't be
 /// found is reported via `missing_repository_ids` without touching its row at all, so a
 /// temporary/misdetected miss can't silently corrupt its config. If the project root itself is
@@ -156,7 +156,7 @@ pub async fn refresh_repositories(
 }
 
 /// Deletes a project and everything under it (repositories, dependencies, profiles, launch
-/// history — all via existing ON DELETE CASCADE foreign keys). Rejects the deletion if any of
+/// history - all via existing ON DELETE CASCADE foreign keys). Rejects the deletion if any of
 /// the project's repositories are currently running or starting, checked against the live
 /// process tracker rather than only the database, so a stale frontend status cache can't lead
 /// to an orphaned OS process.
@@ -177,14 +177,14 @@ pub async fn delete_project(state: State<'_, AppState>, project_id: i64) -> Resu
 
 /// Count of currently-*running* (not merely enabled) services per project, for the sidebar's
 /// per-project running indicator. Read-only and derived entirely from existing state (the
-/// service list + the live process tracker) — no new persisted "running count" data. A project
+/// service list + the live process tracker) - no new persisted "running count" data. A project
 /// with zero repos, or an unknown project id, simply gets `0` rather than an error, since the
 /// sidebar calls this for every recent project in one batch and one stale/missing id shouldn't
 /// fail the whole batch.
 ///
 /// No automated test: like `delete_project`'s running-repo guard, this depends on
 /// `ProcessManager::is_running`, which needs a real Tauri `AppHandle` that can't be constructed
-/// in a unit test — the same accepted gap, verified manually instead.
+/// in a unit test - the same accepted gap, verified manually instead.
 #[tauri::command]
 pub async fn project_running_counts(
     state: State<'_, AppState>,
@@ -365,11 +365,11 @@ async fn discover_and_persist(
 /// For each existing repo, checks whether a `package.json` still exists at the same path
 /// relative to `new_root` as the repo currently has relative to `old_root`. Repos that don't
 /// match (moved away, or the new root has a different layout) are simply absent from the
-/// result — left for the caller (and a normal Refresh) to leave untouched.
+/// result - left for the caller (and a normal Refresh) to leave untouched.
 ///
 /// Caveat on Windows: `strip_prefix` does exact component comparison (case-sensitive apart from
 /// the drive letter), so if `old_root`/`new_root` ever differ from a repo's stored path in case
-/// or short-vs-long (8.3) form, that repo will silently fail to match and be excluded — which,
+/// or short-vs-long (8.3) form, that repo will silently fail to match and be excluded - which,
 /// combined with the subsequent full rescan, produces duplicate repo rows at the new location
 /// rather than a clean no-op.
 fn compute_repo_remap(
@@ -580,7 +580,7 @@ pub async fn execute_project(
     Ok(ExecuteResult { started, skipped })
 }
 
-/// Stop every running repository in a project (F9 — Stop All). Repos that aren't running are
+/// Stop every running repository in a project (F9 - Stop All). Repos that aren't running are
 /// ignored.
 #[tauri::command]
 pub async fn stop_all(state: State<'_, AppState>, project_id: i64) -> Result<(), AppError> {
@@ -588,7 +588,7 @@ pub async fn stop_all(state: State<'_, AppState>, project_id: i64) -> Result<(),
         .await
         .map_err(|e| AppError::Persist(e.to_string()))?;
     for repo in repos {
-        // Ignore "not running" errors — we only care that nothing is left running.
+        // Ignore "not running" errors - we only care that nothing is left running.
         let _ = state.process_manager.stop(repo.id);
     }
     Ok(())
@@ -742,11 +742,11 @@ pub async fn list_env_files(state: State<'_, AppState>, repository_id: i64) -> R
 }
 
 /// Open an external terminal at the repository's working directory (F12). An in-app
-/// "integrated" terminal is deferred past v1 (R6) — this always opens an external window, in
+/// "integrated" terminal is deferred past v1 (R6) - this always opens an external window, in
 /// the shell chosen by `Settings.terminal_shell`.
 ///
 /// When Windows Terminal is installed, this opens as a new tab in the existing `wt` window
-/// instead of a brand-new separate window (feedback #4) — `wt.exe` is only ever the UI shell for
+/// instead of a brand-new separate window (feedback #4) - `wt.exe` is only ever the UI shell for
 /// this blank interactive terminal; it is never tracked or added to the app's managed process
 /// tree the way a repo's dev-server process is. Falls back to the original behavior (a plain new
 /// `cmd`/`powershell` window) when Windows Terminal isn't found.
@@ -775,7 +775,7 @@ pub async fn open_repo_terminal(
 
         let mut args = vec!["/C", "start", "", shell];
         if shell == "powershell" {
-            // Same execution-policy bypass as windows_launch_program_args — otherwise the
+            // Same execution-policy bypass as windows_launch_program_args - otherwise the
             // first npm/pnpm/yarn/bun command typed in this window fails to load its .ps1 shim.
             args.extend(["-ExecutionPolicy", "Bypass"]);
         }
@@ -795,7 +795,7 @@ pub async fn open_repo_terminal(
 
 /// Opens the repository folder in VS Code. Windows-only in v1, matching
 /// `open_repo_folder`/`open_repo_terminal`. `code` on Windows is a `.cmd` shim (like
-/// npm/pnpm), so it needs `cmd /C` wrapping — CREATE_NO_WINDOW keeps that wrapper invisible;
+/// npm/pnpm), so it needs `cmd /C` wrapping - CREATE_NO_WINDOW keeps that wrapper invisible;
 /// VS Code opens its own window regardless.
 #[tauri::command]
 pub async fn open_repo_vscode(
@@ -864,7 +864,7 @@ pub async fn git_status_project(
         let cache = cache.clone();
         let semaphore = semaphore.clone();
         handles.push(tokio::spawn(async move {
-            // "canonical" here means the repository's DB path used verbatim as the cache key —
+            // "canonical" here means the repository's DB path used verbatim as the cache key -
             // it is NOT actually passed through Path::canonicalize() (no symlink/`..`/case resolution).
             let canonical_path = std::path::PathBuf::from(&repo.path);
             // Concurrent invocations of git_status_project (e.g. rapid UI tab-switching) can both
@@ -893,7 +893,7 @@ pub async fn git_status_project(
     let mut out = Vec::with_capacity(handles.len());
     for handle in handles {
         // A repo whose git status check panics or fails is intentionally omitted from the results,
-        // consistent with the existing "non-git repos are omitted" contract — not a bug, a deliberate choice.
+        // consistent with the existing "non-git repos are omitted" contract - not a bug, a deliberate choice.
         if let Ok(Some(status)) = handle.await {
             out.push(status);
         }
@@ -988,7 +988,7 @@ pub async fn git_list_branches(
 }
 
 /// Builds a `git -C <path>` command with console-window suppression on Windows (every git
-/// subprocess in this app must be spawned through this helper — see spec 2026-07-31).
+/// subprocess in this app must be spawned through this helper - see spec 2026-07-31).
 fn git_command(path: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C").arg(path);
@@ -1066,7 +1066,7 @@ fn git_status_for(path: &str, repository_id: i64) -> Option<RepoGitStatus> {
     })
 }
 
-/// Switches `path` to `branch`. If dirty and `stash` is true, stashes first (never silently —
+/// Switches `path` to `branch`. If dirty and `stash` is true, stashes first (never silently -
 /// callers must pass `stash: true` explicitly). Returns the freshly computed git status.
 fn git_switch_branch_impl(
     path: &str,
@@ -1076,16 +1076,16 @@ fn git_switch_branch_impl(
     stash_untracked: bool,
 ) -> Result<RepoGitStatus, AppError> {
     let dirty = git_is_dirty(path);
-    // Whether `git stash push` actually created a stash — NOT the same as `dirty`. A tree that's
+    // Whether `git stash push` actually created a stash - NOT the same as `dirty`. A tree that's
     // dirty only with untracked files (`??` in `git status --porcelain`) still leaves `stash push`
     // (without `-u`) a no-op ("No local changes to save", exit 0), so `dirty` alone would
     // incorrectly claim a stash happened. We detect a real stash by comparing the `refs/stash`
-    // ref before and after the push — it only changes when a stash was actually created.
+    // ref before and after the push - it only changes when a stash was actually created.
     let mut stash_created = false;
     if dirty {
         if !stash {
             return Err(AppError::Launch(
-                "repository has uncommitted changes — stash or commit them before switching branches".into(),
+                "repository has uncommitted changes - stash or commit them before switching branches".into(),
             ));
         }
         let before = stash_ref(path);
@@ -1134,7 +1134,7 @@ pub async fn git_switch_branch(
     // Invalidate unconditionally, even on error: a stash may have already mutated the working
     // tree before the switch itself failed, which would otherwise leave a stale cached status
     // (e.g. still `dirty: true`) that contradicts an error message telling the user their
-    // changes were safely stashed. Invalidating when nothing changed is harmless — just a cache
+    // changes were safely stashed. Invalidating when nothing changed is harmless - just a cache
     // miss on the next read.
     state.git_status_cache.invalidate(repository_id);
     let mut status = result?;
@@ -1142,7 +1142,7 @@ pub async fn git_switch_branch(
     Ok(status)
 }
 
-/// Fetch from the repository's remote (R5). Invalidates the cached status for this repo —
+/// Fetch from the repository's remote (R5). Invalidates the cached status for this repo -
 /// any git write command must do the same (spec 2026-07-31).
 #[tauri::command]
 pub async fn git_fetch(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
@@ -1153,7 +1153,7 @@ pub async fn git_fetch(state: State<'_, AppState>, repository_id: i64) -> Result
 }
 
 /// Fast-forward pull the repository (R5). `--ff-only` avoids merge prompts/conflicts hanging.
-/// Invalidates the cached status for this repo — any git write command must do the same.
+/// Invalidates the cached status for this repo - any git write command must do the same.
 #[tauri::command]
 pub async fn git_pull(state: State<'_, AppState>, repository_id: i64) -> Result<String, AppError> {
     let repo = git_repo_path(&state, repository_id).await?;
@@ -1247,7 +1247,7 @@ fn windows_launch_program_args(terminal_shell: &str, command_line: &str) -> (Str
             vec![
                 "-NoProfile".to_string(),
                 // Windows' default execution policy blocks running the .ps1 shims npm/pnpm/
-                // yarn/bun install (npm.ps1 etc.) — without this, every launch fails with
+                // yarn/bun install (npm.ps1 etc.) - without this, every launch fails with
                 // "cannot be loaded because running scripts is disabled on this system".
                 // Scoped to this one process, not a system-wide policy change.
                 "-ExecutionPolicy".to_string(),
@@ -1261,8 +1261,8 @@ fn windows_launch_program_args(terminal_shell: &str, command_line: &str) -> (Str
     }
 }
 
-/// Whether `wt.exe` (Windows Terminal) is resolvable on `PATH`. Checked at call time — no
-/// caching — so installing/uninstalling Windows Terminal takes effect on the very next "Open
+/// Whether `wt.exe` (Windows Terminal) is resolvable on `PATH`. Checked at call time - no
+/// caching - so installing/uninstalling Windows Terminal takes effect on the very next "Open
 /// Terminal" click without needing an app restart. Uses `where` (via a hidden `cmd /C` wrapper,
 /// matching this file's existing shim-hiding idiom) rather than invoking `wt` itself, since `wt`
 /// has no side-effect-free "just check if you exist" flag.
@@ -1278,10 +1278,10 @@ fn windows_terminal_available() -> bool {
 }
 
 /// Builds the args for opening a new Windows Terminal tab at `repo_path` running `shell`.
-/// `-w 0` targets the most-recently-used `wt` window (creating one if none exists) — this is
+/// `-w 0` targets the most-recently-used `wt` window (creating one if none exists) - this is
 /// what gives "one window, many tabs" behavior for free, with no window-tracking of our own.
 /// Windows Terminal itself is only ever the UI shell for this blank interactive shell; the
-/// process it hosts is never tracked, has no PID recorded, and is not part of any Job Object —
+/// process it hosts is never tracked, has no PID recorded, and is not part of any Job Object -
 /// unlike a repo's dev-server process (see `process_manager.rs`), it is intentionally outside
 /// the app's managed process tree.
 fn wt_launch_args(shell: &str, repo_path: &str) -> Vec<String> {
@@ -1294,7 +1294,7 @@ fn wt_launch_args(shell: &str, repo_path: &str) -> Vec<String> {
         shell.to_string(),
     ];
     if shell == "powershell" {
-        // Same execution-policy bypass as windows_launch_program_args — otherwise the first
+        // Same execution-policy bypass as windows_launch_program_args - otherwise the first
         // npm/pnpm/yarn/bun command typed in this tab fails to load its .ps1 shim.
         args.extend(["-ExecutionPolicy".to_string(), "Bypass".to_string()]);
     }
@@ -1304,7 +1304,7 @@ fn wt_launch_args(shell: &str, repo_path: &str) -> Vec<String> {
 const SETTINGS_KEY: &str = "app_settings";
 
 /// Loads `Settings` from the `app_settings` blob, falling back to `Settings::default()` if
-/// missing or unparseable — the one place every settings read goes through.
+/// missing or unparseable - the one place every settings read goes through.
 async fn load_settings(pool: &sqlx::SqlitePool) -> Result<Settings, AppError> {
     match persistence::get_setting(pool, SETTINGS_KEY)
         .await
@@ -1750,7 +1750,7 @@ pub async fn restart_repo(
 }
 
 /// Resolve a repository's launch command. On Windows dev-server launchers (`npm`/`pnpm`/`yarn`/
-/// `bun`) are `.cmd` shims, so we run through `cmd /C <…>` — this is exactly why the Job Object
+/// `bun`) are `.cmd` shims, so we run through `cmd /C <…>` - this is exactly why the Job Object
 /// tree-kill (ADR-0003) is required.
 async fn launch_spec_for(
     state: &AppState,
@@ -1762,7 +1762,7 @@ async fn launch_spec_for(
         .ok_or_else(|| AppError::Launch(format!("repository {repository_id} not found")))?;
 
     // Fail with a clear message rather than letting the spawn itself hit the OS with a
-    // nonexistent cwd (which surfaces as an opaque "The directory name is invalid" error) — a
+    // nonexistent cwd (which surfaces as an opaque "The directory name is invalid" error) - a
     // repo's folder can vanish (moved/deleted outside the app) without the launcher noticing
     // until the user tries to act on it.
     if !std::path::Path::new(&repo.path).is_dir() {
@@ -1830,7 +1830,7 @@ async fn launch_spec_for(
 
 /// Parse a simple `.env` file (KEY=VALUE per line; `#` comments and blanks ignored; surrounding
 /// double quotes on the value stripped). `env_file` may be absolute or relative to `repo_path`.
-/// ponytail: naive parser — no multiline/escape handling; upgrade to a dotenv crate if needed.
+/// ponytail: naive parser - no multiline/escape handling; upgrade to a dotenv crate if needed.
 fn load_env_file(repo_path: &str, env_file: &str) -> Vec<(String, String)> {
     let path = {
         let p = std::path::Path::new(env_file);
@@ -1928,7 +1928,7 @@ mod git_tests {
         let canonical_path = std::path::PathBuf::from(dir.to_str().unwrap());
 
         // First call: cache miss, computed directly (bypassing the Tauri command wrapper, which
-        // needs a full AppState/sqlite pool — this exercises the same cache + git_status_for path
+        // needs a full AppState/sqlite pool - this exercises the same cache + git_status_for path
         // git_status_project uses).
         assert!(cache.get(1, &canonical_path, crate::git_status_cache::GIT_STATUS_CACHE_TTL).is_none());
         let status = git_status_for(dir.to_str().unwrap(), 1).expect("git repo");
@@ -2018,7 +2018,7 @@ mod branch_tests {
         let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
         // current ("zeta") first; the other three branches (main, develop, master) are ALL
         // common names, so they sort by COMMON_BRANCH_ORDER's fixed order (main, master,
-        // develop), not alphabetically — there's nothing left in the "rest" bucket here.
+        // develop), not alphabetically - there's nothing left in the "rest" bucket here.
         assert_eq!(names, vec!["zeta", "main", "master", "develop"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2473,7 +2473,7 @@ mod path_management_tests {
     }
 
     /// Create a fresh temp SQLite DB, migrated and ready to use. Mirrors persistence.rs's own
-    /// test helper — duplicated locally since that one is private to persistence.rs's test
+    /// test helper - duplicated locally since that one is private to persistence.rs's test
     /// module, matching this codebase's existing convention of small per-module test helpers.
     async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
         let unique = format!(
@@ -2600,7 +2600,7 @@ mod path_management_tests {
     }
 
     /// Mirrors `refresh_repositories`' body (bypassing the Tauri command wrapper, which needs a
-    /// real AppHandle/AppState — same approach `update_project_path`'s test above already uses)
+    /// real AppHandle/AppState - same approach `update_project_path`'s test above already uses)
     /// against a real DB + real filesystem, returning what the command would return.
     async fn run_refresh_repositories(
         pool: &sqlx::SqlitePool,
