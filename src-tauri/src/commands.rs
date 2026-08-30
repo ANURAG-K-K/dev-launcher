@@ -471,6 +471,30 @@ pub async fn set_repository_dependencies(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
+/// Whether an enabled repository can be launched: an explicit non-empty command override,
+/// or a resolvable default from its detected toolchain (design.md §4).
+pub(crate) fn is_launchable(repo: &persistence::Repository) -> bool {
+    if repo.enabled != 1 {
+        return false;
+    }
+    if repo.command.as_deref().is_some_and(|c| !c.is_empty()) {
+        return true;
+    }
+    scanner::PackageManager::parse(&repo.package_manager)
+        .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
+        .is_some()
+}
+
+/// Resolves a repository's effective launch command: its override if set, else the
+/// toolchain's default (design.md §4).
+pub(crate) fn resolve_command(repo: &persistence::Repository) -> Option<String> {
+    if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
+        return Some(command.to_string());
+    }
+    scanner::PackageManager::parse(&repo.package_manager)
+        .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
+}
+
 /// Execute all enabled repositories in a project sequentially (F7), honoring dependency order
 /// (F8). A repo whose dependency is disabled/unlaunchable is skipped (policy A4: block + report);
 /// a dependency cycle aborts the whole launch before anything starts.
@@ -490,21 +514,8 @@ pub async fn execute_project(
     let enabled_ids: Vec<i64> = repos.iter().filter(|r| r.enabled == 1).map(|r| r.id).collect();
 
     // Start from enabled repos that actually have a launch command.
-    let mut runnable: std::collections::HashSet<i64> = repos
-        .iter()
-        .filter(|r| {
-            if r.enabled != 1 {
-                return false;
-            }
-            if r.command.as_deref().is_some_and(|c| !c.is_empty()) {
-                return true;
-            }
-            scanner::PackageManager::parse(&r.package_manager)
-                .and_then(|pm| scanner::default_command(pm, r.detected_script.as_deref()))
-                .is_some()
-        })
-        .map(|r| r.id)
-        .collect();
+    let mut runnable: std::collections::HashSet<i64> =
+        repos.iter().filter(|r| is_launchable(r)).map(|r| r.id).collect();
 
     // Block-on-unmet-dependency (A4): drop any repo that depends on something outside the runnable
     // set, repeating until stable (so transitive blockers propagate).
@@ -1785,11 +1796,7 @@ async fn launch_spec_for(
     // toolchain's default command (design.md §3-4 - covers Node's script-based default and
     // every other ecosystem's fixed default through the same function).
     let mut tokens: Vec<String> = Vec::new();
-    let default = scanner::PackageManager::parse(&repo.package_manager)
-        .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()));
-    if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
-        tokens.push(command.to_string());
-    } else if let Some(command) = default {
+    if let Some(command) = resolve_command(&repo) {
         tokens.push(command);
     } else {
         return Err(AppError::Launch(format!(
@@ -3095,10 +3102,10 @@ mod list_env_files_tests {
 /// `execute_project` and `launch_spec_for` take `tauri::State<'_, AppState>`/`&AppState`, and
 /// `AppState` embeds a `ProcessManager` that requires a live `tauri::AppHandle` to construct -
 /// this crate has no `tauri` "test" feature enabled (see `Cargo.toml`), so those functions
-/// cannot be invoked directly in a unit test without an out-of-scope Cargo.toml change. Instead
-/// these tests exercise the exact resolution logic added at each site (`scanner::PackageManager
-/// ::parse` + `scanner::default_command`) against constructed `Repository` rows, reproducing
-/// the site's own predicate/builder so a regression there fails here too.
+/// cannot be invoked directly in a unit test without an out-of-scope Cargo.toml change. Instead,
+/// `execute_project`'s filter and `launch_spec_for`'s command builder were extracted into the
+/// pure `is_launchable`/`resolve_command` functions above, which these tests call directly -
+/// no mirrored/hand-copied logic, so a regression in either extracted function fails here too.
 #[cfg(test)]
 mod default_command_tests {
     use super::*;
@@ -3145,29 +3152,6 @@ mod default_command_tests {
         }
     }
 
-    /// Mirrors `execute_project`'s launchable-repo filter (commands.rs, `execute_project`) so a
-    /// regression in that closure fails this test too.
-    fn is_runnable(repo: &persistence::Repository) -> bool {
-        if repo.enabled != 1 {
-            return false;
-        }
-        if repo.command.as_deref().is_some_and(|c| !c.is_empty()) {
-            return true;
-        }
-        scanner::PackageManager::parse(&repo.package_manager)
-            .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
-            .is_some()
-    }
-
-    /// Mirrors `launch_spec_for`'s command-token builder so a regression there fails this test.
-    fn resolved_command(repo: &persistence::Repository) -> Option<String> {
-        if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
-            return Some(command.to_string());
-        }
-        scanner::PackageManager::parse(&repo.package_manager)
-            .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
-    }
-
     #[tokio::test]
     async fn freshly_discovered_cargo_repo_is_launchable_with_default_command() {
         let (pool, db_path) = setup_test_db().await;
@@ -3180,14 +3164,12 @@ mod default_command_tests {
         .await
         .expect("upsert repository failed");
 
-        // No command override, no detected_script (Rust never sets one) - must still resolve.
+        // No command override, no detected_script (Rust never sets one) - must still resolve,
+        // through the exact same functions execute_project/launch_spec_for call.
         assert_eq!(repo.command, None);
         assert_eq!(repo.detected_script, None);
-        let resolved = scanner::default_command(
-            scanner::PackageManager::parse(&repo.package_manager).expect("valid package_manager"),
-            repo.detected_script.as_deref(),
-        );
-        assert_eq!(resolved.as_deref(), Some("cargo run"));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("cargo run"));
 
         pool.close().await;
         cleanup_db(&db_path);
@@ -3208,9 +3190,9 @@ mod default_command_tests {
     fn non_node_repos_with_no_override_and_no_script_are_launchable() {
         for pm in ["cargo", "dotnet", "pip", "poetry", "uv", "pipenv"] {
             let repo = fake_repo(pm, None, None);
-            assert!(is_runnable(&repo), "expected '{pm}' repo with no override to be runnable");
+            assert!(is_launchable(&repo), "expected '{pm}' repo with no override to be runnable");
             assert!(
-                resolved_command(&repo).is_some(),
+                resolve_command(&repo).is_some(),
                 "expected '{pm}' repo with no override to resolve a default command"
             );
         }
@@ -3221,35 +3203,42 @@ mod default_command_tests {
         // Node has no fixed default command - unlike cargo/dotnet/pip, it truly needs either a
         // detected start script or a user override.
         let repo = fake_repo("npm", None, None);
-        assert!(!is_runnable(&repo));
-        assert_eq!(resolved_command(&repo), None);
+        assert!(!is_launchable(&repo));
+        assert_eq!(resolve_command(&repo), None);
     }
 
     #[test]
     fn empty_string_override_falls_back_to_default_command() {
         let repo = fake_repo("cargo", None, Some(""));
-        assert!(is_runnable(&repo));
-        assert_eq!(resolved_command(&repo).as_deref(), Some("cargo run"));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("cargo run"));
     }
 
     #[test]
     fn non_empty_override_wins_regardless_of_package_manager() {
         let repo = fake_repo("dotnet", None, Some("dotnet watch run"));
-        assert!(is_runnable(&repo));
-        assert_eq!(resolved_command(&repo).as_deref(), Some("dotnet watch run"));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("dotnet watch run"));
     }
 
     #[test]
     fn disabled_repo_is_never_runnable_even_with_a_default() {
         let mut repo = fake_repo("cargo", None, None);
         repo.enabled = 0;
-        assert!(!is_runnable(&repo));
+        assert!(!is_launchable(&repo));
     }
 
     #[test]
     fn node_repo_with_detected_script_is_launchable_with_npm_run_default() {
         let repo = fake_repo("npm", Some("dev"), None);
-        assert!(is_runnable(&repo));
-        assert_eq!(resolved_command(&repo).as_deref(), Some("npm run dev"));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("npm run dev"));
+    }
+
+    #[test]
+    fn unknown_package_manager_is_never_launchable() {
+        let repo = fake_repo("gradle", None, None);
+        assert!(!is_launchable(&repo));
+        assert_eq!(resolve_command(&repo), None);
     }
 }
