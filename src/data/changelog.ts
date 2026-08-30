@@ -31,6 +31,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "Fixed imported profile not taking effect until switching profiles away and back",
       "Fixed importing a profile from an unrelated project silently creating an empty one - now rejected with a clear error",
       "Partial-import \"some services not found\" notice is now a popup suggesting Re-scan, instead of easy-to-miss inline text",
+      "Env file is now selectable from a dropdown of files found in the service's folder, with a Custom path... option and file browser for anything else",
     ],
   },
   {
