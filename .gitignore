@@ -36,3 +36,6 @@ dist-ssr
 
 # Subagent-driven-development scratch workspaces (ledgers, briefs, review packages)
 /.superpowers/
+
+# Local git worktrees for isolated feature work
+/.worktrees/
