@@ -86,7 +86,6 @@ export function Project({
   const [stopBusy, setStopBusy] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState("");
-  const [importNotice, setImportNotice] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
@@ -368,7 +367,6 @@ export function Project({
     if (!path) return;
     setProfileBusy(true);
     setProfileError("");
-    setImportNotice("");
     try {
       const result = await importProfile(project!.id, path);
       onProfilesChanged();
@@ -380,8 +378,10 @@ export function Project({
       setLaunchDelayMs(result.profile.launchDelayMs);
       setActiveProfileId(result.profile.id);
       if (result.skippedMembers.length > 0) {
-        setImportNotice(
-          `Imported "${result.profile.name}" - not found in this project: ${result.skippedMembers.join(", ")}`,
+        await message(
+          `Imported "${result.profile.name}", but these services weren't found in this project: ${result.skippedMembers.join(", ")}.\n\n` +
+            `If one was removed here and its folder still exists, try Re-scan to rediscover it (Re-scan restores a removed service; Refresh does not) - then delete this profile and import it again.`,
+          { title: "Profile imported with missing services", kind: "warning" },
         );
       }
     } catch (err) {
@@ -560,9 +560,6 @@ export function Project({
           </span>
           {profileError && (
             <span style={{ color: "var(--color-status-bad-fg)", fontSize: 11 }}>{profileError}</span>
-          )}
-          {importNotice && (
-            <span className="text-muted" style={{ fontSize: 11 }}>{importNotice}</span>
           )}
         </div>
       </div>
