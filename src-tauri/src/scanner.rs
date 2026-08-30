@@ -86,30 +86,87 @@ pub enum ScanError {
     Io(String),
 }
 
-/// Lockfile → package manager precedence, first match wins (design.md §1.2 / SRS FR-5).
-const LOCKFILE_PRECEDENCE: &[(&str, PackageManager)] = &[
-    ("pnpm-lock.yaml", PackageManager::Pnpm),
-    ("package-lock.json", PackageManager::Npm),
-    ("yarn.lock", PackageManager::Yarn),
-    ("bun.lock", PackageManager::Bun),
+/// One ecosystem's detection rules: how to recognize a repo of this kind, how to pick its
+/// toolchain, and how to build its default launch command. `ECOSYSTEMS` below is checked in
+/// order; the first `marker` match wins (design.md §2 - deliberate, not a heuristic to
+/// refine later).
+struct EcosystemSpec {
+    /// True if `dir` is a repository root for this ecosystem.
+    marker: fn(&Path) -> bool,
+    /// Lockfile -> toolchain, checked in order; first match wins. Empty for
+    /// single-toolchain ecosystems (Rust, .NET).
+    toolchain_precedence: &'static [(&'static str, PackageManager)],
+    /// Toolchain when no entry in `toolchain_precedence` matches (or the list is empty).
+    default_toolchain: PackageManager,
+}
+
+fn has_marker_file(dir: &Path, files: &[&str]) -> bool {
+    files.iter().any(|f| dir.join(f).is_file())
+}
+
+fn has_file_with_extension(dir: &Path, ext: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().extension().and_then(|e| e.to_str()) == Some(ext))
+}
+
+const ECOSYSTEMS: &[EcosystemSpec] = &[
+    // Node
+    EcosystemSpec {
+        marker: |dir| dir.join("package.json").is_file(),
+        toolchain_precedence: &[
+            ("pnpm-lock.yaml", PackageManager::Pnpm),
+            ("package-lock.json", PackageManager::Npm),
+            ("yarn.lock", PackageManager::Yarn),
+            ("bun.lock", PackageManager::Bun),
+        ],
+        default_toolchain: PackageManager::Npm,
+    },
+    // Python
+    EcosystemSpec {
+        marker: |dir| has_marker_file(dir, &["pyproject.toml", "requirements.txt", "Pipfile"]),
+        toolchain_precedence: &[
+            ("poetry.lock", PackageManager::Poetry),
+            ("uv.lock", PackageManager::Uv),
+            ("Pipfile.lock", PackageManager::Pipenv),
+        ],
+        default_toolchain: PackageManager::Pip,
+    },
+    // Rust
+    EcosystemSpec {
+        marker: |dir| dir.join("Cargo.toml").is_file(),
+        toolchain_precedence: &[],
+        default_toolchain: PackageManager::Cargo,
+    },
+    // .NET
+    EcosystemSpec {
+        marker: |dir| has_file_with_extension(dir, "csproj") || has_file_with_extension(dir, "sln"),
+        toolchain_precedence: &[],
+        default_toolchain: PackageManager::Dotnet,
+    },
 ];
 
-/// Script keys searched in priority order; first one present in `scripts` wins.
-const SCRIPT_PRIORITY: &[&str] = &["start:dev", "dev", "start", "serve", "watch"];
-
-fn detect_package_manager(repo_dir: &Path) -> PackageManager {
-    for (lockfile, manager) in LOCKFILE_PRECEDENCE {
-        if repo_dir.join(lockfile).is_file() {
+fn detect_toolchain(dir: &Path, spec: &EcosystemSpec) -> PackageManager {
+    for (lockfile, manager) in spec.toolchain_precedence {
+        if dir.join(lockfile).is_file() {
             return *manager;
         }
     }
-    PackageManager::Npm
+    spec.default_toolchain
 }
+
+/// Script keys searched in priority order for Node repos; first one present in `scripts` wins.
+/// Only Node has a `scripts` field to read - every other ecosystem always has `detected_script
+/// == None` and relies entirely on `default_command`'s fixed default (design.md §3).
+const SCRIPT_PRIORITY: &[&str] = &["start:dev", "dev", "start", "serve", "watch"];
 
 /// Parses `package.json` and returns the first known script key present in `scripts`.
 /// Malformed JSON or a missing/non-object `scripts` field yields `None` rather than an error
 /// (design.md §1.3/§1.5 - a bad package.json must not fail the whole scan).
-fn detect_script(pkg_json_path: &Path) -> Option<String> {
+fn detect_node_script(pkg_json_path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(pkg_json_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
     let scripts = json.get("scripts")?.as_object()?;
@@ -119,40 +176,44 @@ fn detect_script(pkg_json_path: &Path) -> Option<String> {
         .map(|&s| s.to_string())
 }
 
-/// Builds the default display/launch command for a manager + script (design.md §1.4).
-fn build_command(manager: PackageManager, script: &str) -> String {
-    match manager {
-        PackageManager::Npm => format!("npm run {script}"),
-        PackageManager::Pnpm => format!("pnpm run {script}"),
-        PackageManager::Bun => format!("bun run {script}"),
-        PackageManager::Yarn => format!("yarn {script}"),
-        PackageManager::Pip => format!("python -m pip install && python {script}"),
-        PackageManager::Poetry => format!("poetry run python {script}"),
-        PackageManager::Uv => format!("uv run {script}"),
-        PackageManager::Pipenv => format!("pipenv run {script}"),
-        PackageManager::Cargo => format!("cargo run --release -- {script}"),
-        PackageManager::Dotnet => format!("dotnet run -- {script}"),
+/// Builds the default launch command for a toolchain. `detected_script` is only ever `Some`
+/// for Node (the only ecosystem with a script list to read); every other toolchain ignores it
+/// and returns its one fixed default (design.md §3). This is the single source of truth for
+/// "what does this repository run by default" - called both at scan time (`classify_repo_dir`)
+/// and at launch/filter time in `commands.rs`, so the two never drift apart (design.md §4).
+pub fn default_command(pm: PackageManager, detected_script: Option<&str>) -> Option<String> {
+    match pm {
+        PackageManager::Npm => detected_script.map(|s| format!("npm run {s}")),
+        PackageManager::Pnpm => detected_script.map(|s| format!("pnpm run {s}")),
+        PackageManager::Bun => detected_script.map(|s| format!("bun run {s}")),
+        PackageManager::Yarn => detected_script.map(|s| format!("yarn {s}")),
+        PackageManager::Pip => Some("python main.py".to_string()),
+        PackageManager::Poetry => Some("poetry run python main.py".to_string()),
+        PackageManager::Uv => Some("uv run main.py".to_string()),
+        PackageManager::Pipenv => Some("pipenv run python main.py".to_string()),
+        PackageManager::Cargo => Some("cargo run".to_string()),
+        PackageManager::Dotnet => Some("dotnet run".to_string()),
     }
 }
 
-/// Classifies a single directory as a repository iff it directly contains `package.json`.
-/// `display_name` overrides the leaf directory name (used to qualify nested repos as
-/// `sub_dir/repo`); pass `None` to use the directory's own name.
+/// Classifies a single directory as a repository iff it matches some ecosystem's marker
+/// (design.md §2, first match in `ECOSYSTEMS` order wins). `display_name` overrides the leaf
+/// directory name (used to qualify nested repos as `sub_dir/repo`); pass `None` to use the
+/// directory's own name.
 pub fn classify_repo_dir(path: &Path, display_name: Option<&str>) -> Option<DiscoveredRepo> {
-    let pkg_json = path.join("package.json");
-    if !pkg_json.is_file() {
-        return None;
-    }
+    let (index, spec) = ECOSYSTEMS.iter().enumerate().find(|(_, spec)| (spec.marker)(path))?;
 
     let name = match display_name {
         Some(n) => n.to_string(),
         None => path.file_name()?.to_string_lossy().into_owned(),
     };
-    let package_manager = detect_package_manager(path);
-    let detected_script = detect_script(&pkg_json);
-    let command = detected_script
-        .as_deref()
-        .map(|script| build_command(package_manager, script));
+    let package_manager = detect_toolchain(path, spec);
+    let detected_script = if index == 0 {
+        detect_node_script(&path.join("package.json"))
+    } else {
+        None
+    };
+    let command = default_command(package_manager, detected_script.as_deref());
 
     Some(DiscoveredRepo {
         name,
@@ -352,19 +413,168 @@ mod tests {
 
     #[test]
     fn command_templates_and_yarn_omits_run() {
-        assert_eq!(
-            build_command(PackageManager::Npm, "dev"),
-            "npm run dev"
-        );
-        assert_eq!(
-            build_command(PackageManager::Pnpm, "start:dev"),
-            "pnpm run start:dev"
-        );
-        assert_eq!(
-            build_command(PackageManager::Bun, "dev"),
-            "bun run dev"
-        );
-        assert_eq!(build_command(PackageManager::Yarn, "dev"), "yarn dev");
+        assert_eq!(default_command(PackageManager::Npm, Some("dev")).as_deref(), Some("npm run dev"));
+        assert_eq!(default_command(PackageManager::Pnpm, Some("start:dev")).as_deref(), Some("pnpm run start:dev"));
+        assert_eq!(default_command(PackageManager::Bun, Some("dev")).as_deref(), Some("bun run dev"));
+        assert_eq!(default_command(PackageManager::Yarn, Some("dev")).as_deref(), Some("yarn dev"));
+    }
+
+    #[test]
+    fn python_repo_detected_via_pyproject_toml() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "pyproject.toml", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Pip);
+        assert_eq!(repos[0].command.as_deref(), Some("python main.py"));
+    }
+
+    #[test]
+    fn python_repo_detected_via_requirements_txt() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "requirements.txt", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Pip);
+    }
+
+    #[test]
+    fn python_repo_detected_via_pipfile() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "Pipfile", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Pip);
+    }
+
+    #[test]
+    fn python_toolchain_precedence_poetry_beats_uv() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "pyproject.toml", "");
+        write(&repo, "poetry.lock", "");
+        write(&repo, "uv.lock", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos[0].package_manager, PackageManager::Poetry);
+        assert_eq!(repos[0].command.as_deref(), Some("poetry run python main.py"));
+    }
+
+    #[test]
+    fn python_toolchain_uv_alone() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "pyproject.toml", "");
+        write(&repo, "uv.lock", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos[0].package_manager, PackageManager::Uv);
+        assert_eq!(repos[0].command.as_deref(), Some("uv run main.py"));
+    }
+
+    #[test]
+    fn python_toolchain_pipenv_alone() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "Pipfile", "");
+        write(&repo, "Pipfile.lock", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos[0].package_manager, PackageManager::Pipenv);
+        assert_eq!(repos[0].command.as_deref(), Some("pipenv run python main.py"));
+    }
+
+    #[test]
+    fn python_no_lockfile_defaults_to_pip() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "requirements.txt", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos[0].package_manager, PackageManager::Pip);
+        assert_eq!(repos[0].command.as_deref(), Some("python main.py"));
+    }
+
+    #[test]
+    fn rust_repo_detected_via_cargo_toml() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "Cargo.toml", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Cargo);
+        assert_eq!(repos[0].command.as_deref(), Some("cargo run"));
+    }
+
+    #[test]
+    fn dotnet_repo_detected_via_csproj() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "MyApp.csproj", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Dotnet);
+        assert_eq!(repos[0].command.as_deref(), Some("dotnet run"));
+    }
+
+    #[test]
+    fn dotnet_repo_detected_via_sln() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "MyApp.sln", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].package_manager, PackageManager::Dotnet);
+    }
+
+    #[test]
+    fn ecosystem_precedence_node_wins_over_rust_when_both_markers_present() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "package.json", "{}");
+        write(&repo, "Cargo.toml", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert!(matches!(
+            repos[0].package_manager,
+            PackageManager::Npm | PackageManager::Pnpm | PackageManager::Yarn | PackageManager::Bun
+        ));
+    }
+
+    #[test]
+    fn no_ecosystem_marker_is_not_detected() {
+        let tmp = TempDir::new();
+        tmp.child_dir("not-a-repo-of-any-kind");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert!(repos.is_empty());
+    }
+
+    #[test]
+    fn default_command_covers_every_new_toolchain() {
+        assert_eq!(default_command(PackageManager::Pip, None).as_deref(), Some("python main.py"));
+        assert_eq!(default_command(PackageManager::Poetry, None).as_deref(), Some("poetry run python main.py"));
+        assert_eq!(default_command(PackageManager::Uv, None).as_deref(), Some("uv run main.py"));
+        assert_eq!(default_command(PackageManager::Pipenv, None).as_deref(), Some("pipenv run python main.py"));
+        assert_eq!(default_command(PackageManager::Cargo, None).as_deref(), Some("cargo run"));
+        assert_eq!(default_command(PackageManager::Dotnet, None).as_deref(), Some("dotnet run"));
+    }
+
+    #[test]
+    fn default_command_node_still_requires_a_script() {
+        assert_eq!(default_command(PackageManager::Npm, Some("dev")).as_deref(), Some("npm run dev"));
+        assert_eq!(default_command(PackageManager::Yarn, Some("dev")).as_deref(), Some("yarn dev"));
+        assert_eq!(default_command(PackageManager::Npm, None), None);
     }
 
     #[test]
