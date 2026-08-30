@@ -33,6 +33,14 @@ export interface ProjectWithRepos {
   repositories: Repository[];
 }
 
+/** Return type of the lightweight `refresh_repositories` command ("Refresh"). */
+export interface RefreshResult {
+  project: Project;
+  repositories: Repository[];
+  missingRepositoryIds: number[];
+  rootMissing: boolean;
+}
+
 /** Payload of the `repo_status_changed` event; also the return type of start/restart_repo. */
 export interface RepoStatus {
   repositoryId: number;
@@ -84,6 +92,13 @@ export interface Profile {
   repositoryIds: number[];
 }
 
+/** Result of `import_profile`: the created profile, plus any member names from the file that
+ * didn't match a service currently discovered in the target project. */
+export interface ImportProfileResult {
+  profile: Profile;
+  skippedMembers: string[];
+}
+
 /** An entry in a launch record's `items` list (one per repository). */
 export interface LaunchItemRecord {
   repositoryName: string;
@@ -93,7 +108,7 @@ export interface LaunchItemRecord {
   stoppedAt: string | null;
 }
 
-/** A recorded "Execute All" run. */
+/** A recorded "Execute" run. */
 export interface LaunchRecord {
   id: number;
   profileName: string | null;

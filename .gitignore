@@ -33,3 +33,6 @@ dist-ssr
 *.sqlite3
 .env
 .env.*
+
+# Subagent-driven-development scratch workspaces (ledgers, briefs, review packages)
+/.superpowers/

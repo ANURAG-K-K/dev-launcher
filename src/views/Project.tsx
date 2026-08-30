@@ -1,9 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  addRepositoryManual,
   applyProfile,
   createProfile,
   deleteProfile,
   executeProject,
+  exportProfile,
+  importProfile,
+  pickDirectory,
+  pickProfileOpenPath,
+  pickProfileSavePath,
   gitFetch,
   gitPull,
   gitStatusProject,
@@ -11,6 +17,7 @@ import {
   openRepoFolder,
   openRepoTerminal,
   openRepoVscode,
+  refreshRepositories,
   restartRepo,
   scanRepositories,
   setRepositoryEnabled,
@@ -22,12 +29,18 @@ import {
   setRepositoryFavorite,
   setRepositoryVisibleConsole,
   getSettings,
+  updateProjectPath,
 } from "@/api";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import type { DependencyEdge, ExecuteResult, Profile, Project as ProjectT, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository } from "@/types";
 import { RepoEditDialog } from "./RepoEditDialog";
 import { BranchSwitchDialog } from "./BranchSwitchDialog";
 import { IconButton } from "@/components/IconButton";
+import { ACTION_KEYS } from "@/lib/actionKeys";
+
+const ACTION_ICON: Record<string, ReactNode> = Object.fromEntries(
+  ACTION_KEYS.map(({ key, icon }) => [key, icon]),
+);
 
 /** Project view (F4): repository list for the open project + Refresh (F2/D3). */
 export function Project({
@@ -61,7 +74,6 @@ export function Project({
   onRepositoriesReplaced: (repos: Repository[]) => void;
   onProfilesChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState<number | null>(null);
   const [rowError, setRowError] = useState<Record<number, string>>({});
   const [enabledBusy, setEnabledBusy] = useState<number | null>(null);
@@ -77,6 +89,15 @@ export function Project({
   const [savingProfile, setSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [gitByRepo, setGitByRepo] = useState<Record<number, RepoGitStatus>>({});
+  const [addRepoBusy, setAddRepoBusy] = useState(false);
+  const [addRepoError, setAddRepoError] = useState("");
+  const [rescanBusy, setRescanBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [missingRepoIds, setMissingRepoIds] = useState<number[]>([]);
+  const [rootMissing, setRootMissing] = useState(false);
+  const [locateBusy, setLocateBusy] = useState(false);
+  const [locateError, setLocateError] = useState("");
+  const [serviceFilter, setServiceFilter] = useState("");
 
   // Fetched fresh on mount (not passed down from App.tsx) so a change made in Settings takes
   // effect the next time this view is opened, without needing an app restart.
@@ -96,7 +117,7 @@ export function Project({
       });
   }, []);
 
-  // The execute summary is a one-shot outcome, not live state — auto-dismiss it so it can't go
+  // The execute summary is a one-shot outcome, not live state - auto-dismiss it so it can't go
   // stale as repos are started/stopped individually (the live "running" count below is the truth).
   useEffect(() => {
     if (!executeResult) return;
@@ -113,6 +134,21 @@ export function Project({
     if (project) void loadGitStatus(project.id);
   }, [project?.id]);
 
+  // Lightweight stale-folder check: verifies the already-listed repos (and the project root)
+  // still exist on disk. Unlike Re-scan, this never discovers new repos and never un-removes a
+  // repo the user deliberately removed - see refreshRepos below. Runs automatically whenever
+  // this view opens for a project, so a folder deleted outside the app while viewing something
+  // else is caught the moment the user comes back, not only after a manual click.
+  useEffect(() => {
+    // Clear synchronously on project switch so the previous project's stale-folder banner/badges
+    // (and its service-name filter) can't carry over against the newly-opened project.
+    setRootMissing(false);
+    setMissingRepoIds([]);
+    setServiceFilter("");
+    if (project) void refreshRepos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
+
   if (!project) {
     return (
       <div style={{ padding: "40px 48px" }}>
@@ -121,13 +157,62 @@ export function Project({
     );
   }
 
-  async function refresh() {
-    setBusy(true);
+  /** "Re-scan": full directory scan - picks up brand-new repos and un-removes a previously
+   * removed one if its folder still has a package.json. Kept as a distinct, explicit action
+   * (not the default "Refresh") since it can undo a deliberate Remove. */
+  async function rescan() {
+    setRescanBusy(true);
     try {
       onScanned(await scanRepositories(project!.id));
       await loadGitStatus(project!.id);
     } finally {
-      setBusy(false);
+      setRescanBusy(false);
+    }
+  }
+
+  /** "Refresh": lightweight check of the already-listed repos only - never discovers new repos,
+   * never un-removes a removed one. Flags repos/the project root that can't be found on disk
+   * without mutating them. */
+  async function refreshRepos() {
+    setRefreshBusy(true);
+    try {
+      const result = await refreshRepositories(project!.id);
+      onScanned({ project: result.project, repositories: result.repositories });
+      setMissingRepoIds(result.missingRepositoryIds);
+      setRootMissing(result.rootMissing);
+    } finally {
+      setRefreshBusy(false);
+    }
+  }
+
+  async function locateProjectRoot() {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setLocateError("");
+    setLocateBusy(true);
+    try {
+      const result = await updateProjectPath(project!.id, dir);
+      onScanned(result);
+      setRootMissing(false);
+      setMissingRepoIds([]);
+    } catch (err) {
+      setLocateError(String(err));
+    } finally {
+      setLocateBusy(false);
+    }
+  }
+
+  async function addRepositoryManually() {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setAddRepoError("");
+    setAddRepoBusy(true);
+    try {
+      onRepositoriesReplaced(await addRepositoryManual(project!.id, dir));
+    } catch (err) {
+      setAddRepoError(String(err));
+    } finally {
+      setAddRepoBusy(false);
     }
   }
 
@@ -182,7 +267,7 @@ export function Project({
   async function removeRepo(repo: Repository) {
     const ok = await confirm(
       `Remove "${repo.name}"? It's stopped and hidden from the list; its launch history is kept, and re-scanning restores it.`,
-      { title: "Remove repository", kind: "warning" },
+      { title: "Remove service", kind: "warning" },
     );
     if (!ok) return;
     await runAction(repo.id, async () => {
@@ -192,6 +277,7 @@ export function Project({
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
   const enabledIds = repositories.filter((r) => r.enabled === 1).map((r) => r.id);
+  const allEnabled = repositories.length > 0 && enabledIds.length === repositories.length;
 
   async function selectProfile(idStr: string) {
     setProfileError("");
@@ -261,6 +347,50 @@ export function Project({
     }
   }
 
+  async function exportActiveProfile() {
+    if (!activeProfile) return;
+    const path = await pickProfileSavePath(activeProfile.name);
+    if (!path) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      await exportProfile(activeProfile.id, path);
+    } catch (err) {
+      setProfileError(String(err));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function importProfileForProject() {
+    const path = await pickProfileOpenPath();
+    if (!path) return;
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      const result = await importProfile(project!.id, path);
+      onProfilesChanged();
+      // Actually apply it - same as picking it from the dropdown (selectProfile) - so the
+      // service enabled/disabled state takes effect immediately, not only after switching
+      // profiles back and forth.
+      const updatedRepos = await applyProfile(result.profile.id);
+      onRepositoriesReplaced(updatedRepos);
+      setLaunchDelayMs(result.profile.launchDelayMs);
+      setActiveProfileId(result.profile.id);
+      if (result.skippedMembers.length > 0) {
+        await message(
+          `Imported "${result.profile.name}", but these services weren't found in this project: ${result.skippedMembers.join(", ")}.\n\n` +
+            `If one was removed here and its folder still exists, try Re-scan to rediscover it (Re-scan restores a removed service; Refresh does not) - then delete this profile and import it again.`,
+          { title: "Profile imported with missing services", kind: "warning" },
+        );
+      }
+    } catch (err) {
+      await message(String(err), { title: "Import failed", kind: "error" });
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
   const runningCount = repositories.filter((r) => {
     const s = statuses[r.id]?.status;
     return s === "running" || s === "starting";
@@ -271,6 +401,9 @@ export function Project({
   const sortedRepos = [...repositories].sort(
     (a, b) => b.favorite - a.favorite || a.name.localeCompare(b.name),
   );
+  const filteredRepos = serviceFilter.trim()
+    ? sortedRepos.filter((r) => r.name.toLowerCase().includes(serviceFilter.trim().toLowerCase()))
+    : sortedRepos;
 
   async function toggleFavorite(repo: Repository) {
     try {
@@ -294,6 +427,31 @@ export function Project({
         <h1 style={{ fontSize: 32 }}>{project.name}</h1>
         <div className="mono text-muted" style={{ fontSize: 12 }}>{project.rootPath}</div>
       </div>
+
+      {rootMissing && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            marginBottom: 16,
+            borderRadius: "var(--radius-md)",
+            background: "var(--color-status-bad-bg)",
+            color: "var(--color-status-bad-fg)",
+            fontSize: 13,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            ⚠ This project's folder could not be found. It may have been moved or deleted.
+            {locateError && <> {locateError}</>}
+          </span>
+          <button type="button" className="btn btn-secondary" onClick={locateProjectRoot} disabled={locateBusy}>
+            {locateBusy ? "Locating…" : "Locate…"}
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }} className="text-muted">
@@ -310,7 +468,7 @@ export function Project({
                 color: "var(--color-text)",
               }}
             >
-              <option value="">— No profile —</option>
+              <option value="">- No profile -</option>
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -376,11 +534,29 @@ export function Project({
               <button type="button" className="btn btn-ghost" onClick={deleteActiveProfile} disabled={profileBusy}>
                 Delete
               </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={exportActiveProfile}
+                disabled={profileBusy}
+                title="Save this profile to a file, e.g. to share with a teammate"
+              >
+                Export…
+              </button>
             </>
           )}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={importProfileForProject}
+            disabled={profileBusy}
+            title="Load a profile from a file, matching its services by name against this project"
+          >
+            Import…
+          </button>
 
           <span className="text-muted" style={{ fontSize: 11 }}>
-            Applying a profile sets which repositories are enabled.
+            Applying a profile sets which services are enabled.
           </span>
           {profileError && (
             <span style={{ color: "var(--color-status-bad-fg)", fontSize: 11 }}>{profileError}</span>
@@ -391,9 +567,26 @@ export function Project({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <p className="text-muted" style={{ margin: 0 }}>
-            {repositories.length} {repositories.length === 1 ? "repository" : "repositories"} discovered
+            {repositories.length} {repositories.length === 1 ? "service" : "services"} discovered
           </p>
           {runningCount > 0 && <span className="tag tag-good">● {runningCount} running</span>}
+          {repositories.length > 0 && (
+            <input
+              type="text"
+              placeholder="Filter services…"
+              value={serviceFilter}
+              onChange={(e) => setServiceFilter(e.target.value)}
+              style={{
+                fontSize: 12.5,
+                padding: "5px 10px",
+                minWidth: 160,
+                border: "1px solid var(--color-divider)",
+                background: "var(--color-bg)",
+                borderRadius: "var(--radius-md)",
+                color: "var(--color-text)",
+              }}
+            />
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }} className="text-muted">
@@ -412,8 +605,14 @@ export function Project({
               }}
             />
           </label>
-          <button type="button" className="btn btn-primary" onClick={executeAll} disabled={executeBusy}>
-            {executeBusy ? "Executing…" : "Execute All"}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={executeAll}
+            disabled={executeBusy}
+            title={allEnabled ? "Launches every service in this project" : "Launches only the currently enabled services"}
+          >
+            {executeBusy ? "Launching…" : allEnabled ? "Launch Project" : "Launch"}
           </button>
           <button
             type="button"
@@ -423,11 +622,39 @@ export function Project({
           >
             {stopBusy ? "Stopping…" : "Stop All"}
           </button>
-          <button type="button" className="btn btn-secondary" onClick={refresh} disabled={busy}>
-            {busy ? "Scanning…" : "Refresh"}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={refreshRepos}
+            disabled={refreshBusy}
+            title="Check the current service list against disk; never brings back a removed service"
+          >
+            {refreshBusy ? "Refreshing…" : "Refresh"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={rescan}
+            disabled={rescanBusy}
+            title="Full directory scan; can rediscover new services and un-remove a previously removed one"
+          >
+            {rescanBusy ? "Scanning…" : "Re-scan"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={addRepositoryManually}
+            disabled={addRepoBusy}
+            title="Pick a folder to add as a service, e.g. one auto-scan didn't find"
+          >
+            {addRepoBusy ? "Adding…" : "Add Service"}
           </button>
         </div>
       </div>
+
+      {addRepoError && (
+        <p style={{ color: "var(--color-status-bad-fg)", fontSize: 13, margin: "0 0 16px" }}>{addRepoError}</p>
+      )}
 
       {(executeResult || executeError) && (
         <div style={{ marginBottom: 16, fontSize: 13 }}>
@@ -442,14 +669,16 @@ export function Project({
       )}
 
       {repositories.length === 0 ? (
-        <p className="text-muted">No repositories with a package.json found under this root.</p>
+        <p className="text-muted">No services with a package.json found under this root.</p>
+      ) : filteredRepos.length === 0 ? (
+        <p className="text-muted">No services match "{serviceFilter}".</p>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table className="table" style={{ minWidth: 640 }}>
             <thead>
               <tr>
                 <th>Enabled</th>
-                <th>Repository</th>
+                <th>Service</th>
                 <th>Branch</th>
                 <th>PID</th>
                 <th>Package Manager</th>
@@ -459,10 +688,11 @@ export function Project({
               </tr>
             </thead>
             <tbody>
-              {sortedRepos.map((r) => {
+              {filteredRepos.map((r) => {
                 const repoStatus = statuses[r.id];
                 const status = repoStatus?.status ?? "stopped";
-                const launchable = r.command != null || r.detectedScript != null;
+                const missing = missingRepoIds.includes(r.id);
+                const launchable = (r.command != null || r.detectedScript != null) && !missing;
                 const busyRow = rowBusy === r.id;
                 const error = rowError[r.id];
                 const running = status === "running" || status === "starting";
@@ -476,7 +706,17 @@ export function Project({
                         onChange={(e) => toggleEnabled(r, e.target.checked)}
                       />
                     </td>
-                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      {r.name}
+                      {missing && (
+                        <span
+                          title="This service's folder could not be found on disk"
+                          style={{ marginLeft: 6, fontWeight: 400, fontSize: 11, color: "var(--color-status-bad-fg)" }}
+                        >
+                          ⚠ folder not found
+                        </span>
+                      )}
+                    </td>
                     <td style={{ fontSize: 12 }}>
                       {gitByRepo[r.id] ? (
                         <span
@@ -514,11 +754,11 @@ export function Project({
                           )}
                         </span>
                       ) : (
-                        <span className="text-muted">—</span>
+                        <span className="text-muted">-</span>
                       )}
                     </td>
                     <td className="mono text-muted" style={{ fontSize: 12 }}>
-                      {running && repoStatus?.pid != null ? repoStatus.pid : "—"}
+                      {running && repoStatus?.pid != null ? repoStatus.pid : "-"}
                     </td>
                     <td>
                       <span className="tag tag-neutral">{r.packageManager}</span>
@@ -552,14 +792,13 @@ export function Project({
                           <IconButton
                             title={
                               r.visibleConsole === 1
-                                ? "Visible console (on) — launches in a window you can type into; logs aren't captured"
-                                : "Visible console (off) — launches in the background with captured logs"
+                                ? "Visible console (on) - launches in a window you can type into; logs aren't captured"
+                                : "Visible console (off) - launches in the background with captured logs"
                             }
                             color={r.visibleConsole === 1 ? "var(--color-accent)" : undefined}
                             onClick={() => toggleVisibleConsole(r)}
                           >
-                            <rect x="3" y="4" width="18" height="13" rx="1" />
-                            <path d="M8 21h8 M12 17v4" />
+                            {ACTION_ICON.visibleConsole}
                           </IconButton>
                         )}
                         {(status === "stopped" || status === "crashed") && (
@@ -597,9 +836,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => gitFetch(r.id))}
                           >
-                            <path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25" />
-                            <path d="M12 12v8" />
-                            <path d="M9 17l3 3 3-3" />
+                            {ACTION_ICON.fetch}
                           </IconButton>
                         )}
                         {gitByRepo[r.id] && visibleActions.includes("pull") && (
@@ -613,14 +850,12 @@ export function Project({
                               })
                             }
                           >
-                            <path d="M12 3v12" />
-                            <path d="M7 10l5 5 5-5" />
-                            <path d="M4 21h16" />
+                            {ACTION_ICON.pull}
                           </IconButton>
                         )}
                         {visibleActions.includes("logs") && (
                           <IconButton title="Logs" onClick={() => onOpenLogs(r.id)}>
-                            <path d="M4 6h16M4 12h16M4 18h10" />
+                            {ACTION_ICON.logs}
                           </IconButton>
                         )}
                         {visibleActions.includes("openFolder") && (
@@ -629,7 +864,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoFolder(r.id))}
                           >
-                            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                            {ACTION_ICON.openFolder}
                           </IconButton>
                         )}
                         {visibleActions.includes("openTerminal") && (
@@ -638,9 +873,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoTerminal(r.id))}
                           >
-                            <rect x="3" y="4" width="18" height="16" rx="2" />
-                            <polyline points="7 9 10 12 7 15" />
-                            <line x1="12" y1="15" x2="16" y2="15" />
+                            {ACTION_ICON.openTerminal}
                           </IconButton>
                         )}
                         {visibleActions.includes("openWithCode") && (
@@ -649,14 +882,12 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => runAction(r.id, () => openRepoVscode(r.id))}
                           >
-                            <polyline points="16 18 22 12 16 6" />
-                            <polyline points="8 6 2 12 8 18" />
+                            {ACTION_ICON.openWithCode}
                           </IconButton>
                         )}
                         {visibleActions.includes("edit") && (
                           <IconButton title="Edit config" onClick={() => setEditingRepo(r)}>
-                            <path d="M12 20h9" />
-                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                            {ACTION_ICON.edit}
                           </IconButton>
                         )}
                         {visibleActions.includes("remove") && (
@@ -666,9 +897,7 @@ export function Project({
                             disabled={busyRow}
                             onClick={() => removeRepo(r)}
                           >
-                            <path d="M3 6h18" />
-                            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                            {ACTION_ICON.remove}
                           </IconButton>
                         )}
                       </div>

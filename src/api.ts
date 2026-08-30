@@ -1,10 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { BranchEntry, DependencyEdge, ExecuteResult, LaunchRecord, Profile, Project, ProjectWithRepos, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import type { BranchEntry, DependencyEdge, ExecuteResult, ImportProfileResult, LaunchRecord, Profile, Project, ProjectWithRepos, RefreshResult, RepoGitStatus, RepoStatus, Repository, Settings } from "./types";
 
 /** Native folder picker; returns the chosen absolute path, or null if cancelled. */
 export async function pickDirectory(): Promise<string | null> {
   const res = await openDialog({ directory: true, multiple: false });
+  return typeof res === "string" ? res : null;
+}
+
+/** Native save-file picker for exporting a profile; returns the chosen path, or null if cancelled. */
+export async function pickProfileSavePath(defaultName: string): Promise<string | null> {
+  const res = await saveDialog({
+    defaultPath: `${defaultName}.json`,
+    filters: [{ name: "Profile", extensions: ["json"] }],
+  });
+  return typeof res === "string" ? res : null;
+}
+
+/** Native open-file picker for importing a profile; returns the chosen path, or null if cancelled. */
+export async function pickProfileOpenPath(): Promise<string | null> {
+  const res = await openDialog({
+    directory: false,
+    multiple: false,
+    filters: [{ name: "Profile", extensions: ["json"] }],
+  });
   return typeof res === "string" ? res : null;
 }
 
@@ -13,6 +32,12 @@ export const openProject = (rootPath: string) =>
 
 export const scanRepositories = (projectId: number) =>
   invoke<ProjectWithRepos>("scan_repositories", { projectId });
+
+export const refreshRepositories = (projectId: number) =>
+  invoke<RefreshResult>("refresh_repositories", { projectId });
+
+export const addRepositoryManual = (projectId: number, path: string) =>
+  invoke<Repository[]>("add_repository_manual", { projectId, path });
 
 export const gitStatusProject = (projectId: number) =>
   invoke<RepoGitStatus[]>("git_status_project", { projectId });
@@ -96,6 +121,21 @@ export const deleteProfile = (profileId: number) =>
 export const applyProfile = (profileId: number) =>
   invoke<Repository[]>("apply_profile", { profileId });
 
+export const exportProfile = (profileId: number, filePath: string) =>
+  invoke<void>("export_profile", { profileId, filePath });
+
+export const importProfile = (projectId: number, filePath: string) =>
+  invoke<ImportProfileResult>("import_profile", { projectId, filePath });
+
+export const listEnvFiles = (repositoryId: number) =>
+  invoke<string[]>("list_env_files", { repositoryId });
+
+/** Native file picker for a custom env file location; returns the chosen path, or null if cancelled. */
+export async function pickEnvFilePath(): Promise<string | null> {
+  const res = await openDialog({ directory: false, multiple: false });
+  return typeof res === "string" ? res : null;
+}
+
 export const openRepoFolder = (repositoryId: number) =>
   invoke<void>("open_repo_folder", { repositoryId });
 
@@ -112,3 +152,15 @@ export const getSettings = () => invoke<Settings>("get_settings");
 
 export const updateSettings = (settings: Settings) =>
   invoke<Settings>("update_settings", { settings });
+
+export const deleteProject = (projectId: number) =>
+  invoke<void>("delete_project", { projectId });
+
+export const projectRunningCounts = (projectIds: number[]) =>
+  invoke<Record<number, number>>("project_running_counts", { projectIds });
+
+export const updateProjectPath = (projectId: number, newRootPath: string) =>
+  invoke<ProjectWithRepos>("update_project_path", { projectId, newRootPath });
+
+export const updateRepositoryPath = (repositoryId: number, newPath: string) =>
+  invoke<Repository>("update_repository_path", { repositoryId, newPath });

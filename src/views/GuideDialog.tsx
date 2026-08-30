@@ -1,27 +1,27 @@
 const SECTIONS: { title: string; body: string }[] = [
   {
     title: "1. Open a project",
-    body: "Pick a project root folder on Home. Its immediate child folders containing a package.json are auto-discovered as repositories.",
+    body: "Pick a project root folder on Home. Its immediate child folders containing a package.json are auto-discovered as services.",
   },
   {
-    title: "2. Configure repositories",
-    body: "Select a repository to override its dev command, env file, or dependency order. Script detection prefers start:dev, then dev, start, serve, watch.",
+    title: "2. Configure services",
+    body: "Select a service to override its dev command, env file, or dependency order. Script detection prefers start:dev, then dev, start, serve, watch.",
   },
   {
     title: "3. Launch profiles",
-    body: "Save named sets of enabled repos + order (e.g. \"Backend\", \"Everything\") from the Project view, then apply one to launch just that set.",
+    body: "Save named sets of enabled services + order (e.g. \"Backend\", \"Everything\") from the Project view, then apply one to launch just that set.",
   },
   {
-    title: "4. Execute All",
-    body: "Starts enabled repositories one at a time, respecting dependency order and the configurable launch delay between each, to avoid resource spikes.",
+    title: "4. Launch Project",
+    body: "Starts enabled services one at a time, respecting dependency order and the configurable launch delay between each, to avoid resource spikes.",
   },
   {
     title: "5. Monitor & control",
-    body: "Track PID, status, and exit code per repository. Start, stop, restart, or open its log stream (with search and filtering) from the Project or Logs view.",
+    body: "Track PID, status, and exit code per service. Start, stop, restart, or open its log stream (with search and filtering) from the Project or Logs view.",
   },
   {
     title: "6. History",
-    body: "Every Execute All run is recorded — see past launches, their outcomes, and exit codes in the History view.",
+    body: "Every launch is recorded - see past runs, their outcomes, and exit codes in the History view.",
   },
 ];
 

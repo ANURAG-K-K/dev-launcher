@@ -5,6 +5,13 @@
 //! lockfile (`pnpm-lock.yaml` → pnpm, `package-lock.json` → npm, `yarn.lock` → yarn,
 //! `bun.lock` → bun), and recommend a startup script by priority
 //! (`start:dev` → `dev` → `start` → `serve` → `watch`).
+//!
+//! A child directory that is itself not a repo (no `package.json`) is checked one level
+//! deeper for repos nested inside it (`parent -> sub_dir -> repo`), so a grouping folder such
+//! as `services/` doesn't hide the repos underneath it. Nested repos are named
+//! `sub_dir/repo` to disambiguate same-named repos under different groups. Nothing past that
+//! one extra level is scanned - a repo the auto-scan still doesn't find can be added manually
+//! (`classify_repo_dir`, used by the `add_repository_manual` command).
 
 use std::path::Path;
 
@@ -70,7 +77,7 @@ fn detect_package_manager(repo_dir: &Path) -> PackageManager {
 
 /// Parses `package.json` and returns the first known script key present in `scripts`.
 /// Malformed JSON or a missing/non-object `scripts` field yields `None` rather than an error
-/// (design.md §1.3/§1.5 — a bad package.json must not fail the whole scan).
+/// (design.md §1.3/§1.5 - a bad package.json must not fail the whole scan).
 fn detect_script(pkg_json_path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(pkg_json_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
@@ -91,9 +98,56 @@ fn build_command(manager: PackageManager, script: &str) -> String {
     }
 }
 
-/// Scans the immediate child directories of `root` (non-recursive) and returns the discovered
-/// repositories, sorted by `name` ascending. A child directory is a repository iff it directly
-/// contains `package.json`; other children are skipped silently.
+/// Classifies a single directory as a repository iff it directly contains `package.json`.
+/// `display_name` overrides the leaf directory name (used to qualify nested repos as
+/// `sub_dir/repo`); pass `None` to use the directory's own name.
+pub fn classify_repo_dir(path: &Path, display_name: Option<&str>) -> Option<DiscoveredRepo> {
+    let pkg_json = path.join("package.json");
+    if !pkg_json.is_file() {
+        return None;
+    }
+
+    let name = match display_name {
+        Some(n) => n.to_string(),
+        None => path.file_name()?.to_string_lossy().into_owned(),
+    };
+    let package_manager = detect_package_manager(path);
+    let detected_script = detect_script(&pkg_json);
+    let command = detected_script
+        .as_deref()
+        .map(|script| build_command(package_manager, script));
+
+    Some(DiscoveredRepo {
+        name,
+        path: path.display().to_string(),
+        package_manager,
+        detected_script,
+        command,
+    })
+}
+
+/// Non-dot subdirectories of `dir`. Unreadable entries/dirs are skipped rather than failing
+/// the scan (this is only ever used for the best-effort nested lookup, not the project root).
+fn subdirs(dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && !p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with('.'))
+                    .unwrap_or(true)
+        })
+        .collect()
+}
+
+/// Scans the project root and returns the discovered repositories, sorted by `name` ascending.
+/// Checks immediate child directories, plus one extra level under any child that is itself not
+/// a repo (`parent -> sub_dir -> repo`, design.md §1.5 / feedback #8).
 pub fn scan_project_root(root: &Path) -> Result<Vec<DiscoveredRepo>, ScanError> {
     if !root.is_dir() {
         return Err(ScanError::RootNotADirectory(root.display().to_string()));
@@ -113,24 +167,19 @@ pub fn scan_project_root(root: &Path) -> Result<Vec<DiscoveredRepo>, ScanError> 
         if name.starts_with('.') {
             continue; // skip .git, .superpowers, etc. before any metadata/package.json check
         }
-        let pkg_json = path.join("package.json");
-        if !pkg_json.is_file() {
+
+        if let Some(repo) = classify_repo_dir(&path, None) {
+            repos.push(repo);
             continue;
         }
-
-        let package_manager = detect_package_manager(&path);
-        let detected_script = detect_script(&pkg_json);
-        let command = detected_script
-            .as_deref()
-            .map(|script| build_command(package_manager, script));
-
-        repos.push(DiscoveredRepo {
-            name,
-            path: path.display().to_string(),
-            package_manager,
-            detected_script,
-            command,
-        });
+        for nested in subdirs(&path) {
+            let display_name = nested
+                .file_name()
+                .map(|leaf| format!("{name}/{}", leaf.to_string_lossy()));
+            if let Some(repo) = classify_repo_dir(&nested, display_name.as_deref()) {
+                repos.push(repo);
+            }
+        }
     }
 
     repos.sort_by(|a, b| a.name.cmp(&b.name));
@@ -301,6 +350,46 @@ mod tests {
         let repos = scan_project_root(tmp.path()).unwrap();
         let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn nested_repo_one_level_under_non_repo_parent_is_found_and_qualified() {
+        let tmp = TempDir::new();
+        let group = tmp.child_dir("services");
+        let repo = group.join("api");
+        std::fs::create_dir_all(&repo).unwrap();
+        write(&repo, "package.json", "{}");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "services/api");
+    }
+
+    #[test]
+    fn repo_directory_is_not_recursed_into_for_nested_repos() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("top-repo");
+        write(&repo, "package.json", "{}");
+        let nested = repo.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        write(&nested, "package.json", "{}");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["top-repo"]);
+    }
+
+    #[test]
+    fn two_levels_deep_is_not_found() {
+        let tmp = TempDir::new();
+        let group = tmp.child_dir("a");
+        let subgroup = group.join("b");
+        let repo = subgroup.join("c");
+        std::fs::create_dir_all(&repo).unwrap();
+        write(&repo, "package.json", "{}");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert!(repos.is_empty());
     }
 
     #[test]

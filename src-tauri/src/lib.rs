@@ -1,4 +1,4 @@
-//! Multi-Repo Dev Launcher — Rust backend entry point.
+//! Multi-Repo Dev Launcher - Rust backend entry point.
 //!
 //! Module layout mirrors the architecture doc (docs/architecture.md §3):
 //!   - `scanner`         repository discovery + script detection (F2/F3)
@@ -70,6 +70,12 @@ pub fn run() {
             commands::open_project,
             commands::rename_project,
             commands::scan_repositories,
+            commands::refresh_repositories,
+            commands::delete_project,
+            commands::project_running_counts,
+            commands::update_project_path,
+            commands::add_repository_manual,
+            commands::update_repository_path,
             commands::list_recent_projects,
             commands::get_settings,
             commands::update_settings,
@@ -79,6 +85,7 @@ pub fn run() {
             commands::set_repository_visible_console,
             commands::remove_repository,
             commands::open_repo_folder,
+            commands::list_env_files,
             commands::open_repo_terminal,
             commands::open_repo_vscode,
             commands::git_status_project,
@@ -96,6 +103,8 @@ pub fn run() {
             commands::update_profile,
             commands::delete_profile,
             commands::apply_profile,
+            commands::export_profile,
+            commands::import_profile,
             commands::start_repo,
             commands::stop_repo,
             commands::restart_repo,

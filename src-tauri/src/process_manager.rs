@@ -1,10 +1,10 @@
 //! Process manager (F7/F9/F10, ADR-0003 / D2; detailed design §2).
 //!
 //! Spawns dev-server processes with `tokio::process`, streams stdout/stderr to the frontend via
-//! `repo_log` Tauri events, tracks live status, and — on Windows — assigns each process to a
+//! `repo_log` Tauri events, tracks live status, and - on Windows - assigns each process to a
 //! Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so Stop/Restart/quit terminate the whole
 //! process tree (no orphaned `node` children). v1 uses a forced Job Object kill (no graceful
-//! `CTRL_BREAK` phase — see docs open question C1).
+//! `CTRL_BREAK` phase - see docs open question C1).
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -56,7 +56,7 @@ pub struct LaunchSpec {
     pub env: Vec<(String, String)>,
     /// When true, spawn in a real visible console window with inherited stdio (interactive
     /// keyboard access) instead of a hidden window with piped output. Trade-off: no `repo_log`
-    /// events are emitted for a visible-console run — Windows can't both pipe stdio for capture
+    /// events are emitted for a visible-console run - Windows can't both pipe stdio for capture
     /// and hand it to a console window at the same time.
     pub visible: bool,
 }
@@ -140,6 +140,17 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// Whether a repository is currently running or starting, per the live tracker (not the
+    /// database). Used by `delete_project` to guard against deleting a project out from under a
+    /// process still writing to it.
+    pub fn is_running(&self, repo_id: i64) -> bool {
+        let map = self.procs.lock().unwrap();
+        matches!(
+            map.get(&repo_id).map(|t| t.status),
+            Some(ProcStatus::Running | ProcStatus::Starting)
+        )
+    }
+
     /// Stop then re-spawn, incrementing the restart count.
     pub async fn restart(&self, repo_id: i64) -> Result<StatusUpdate, String> {
         let spec = {
@@ -158,7 +169,7 @@ impl ProcessManager {
         self.spawn(repo_id, spec, restart_count, None)
     }
 
-    /// Kill every tracked process tree (app-quit cleanup — no orphans).
+    /// Kill every tracked process tree (app-quit cleanup - no orphans).
     pub fn kill_all(&self) {
         let map = self.procs.lock().unwrap();
         for t in map.values() {
@@ -186,7 +197,7 @@ impl ProcessManager {
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .kill_on_drop(false);
         if spec.visible {
-            // Inherited stdio goes to the new console window, giving real keyboard access — but
+            // Inherited stdio goes to the new console window, giving real keyboard access - but
             // that means it can't also be piped, so no repo_log events for this run (see LaunchSpec).
             cmd.stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
@@ -209,7 +220,7 @@ impl ProcessManager {
             let payload = LogLine {
                 repository_id: repo_id,
                 stream: "stdout",
-                line: "— running in a visible console window; output is not captured here —".into(),
+                line: "- running in a visible console window; output is not captured here -".into(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
             let _ = self.app.emit("repo_log", &payload);
@@ -330,7 +341,7 @@ impl ProcessManager {
 
 // ── Windows Job Object helpers ─────────────────────────────────────────────
 // A Job Object created with KILL_ON_JOB_CLOSE terminates every process assigned to it (and their
-// children) when the job is terminated/closed — this is how a Stop reliably kills the whole
+// children) when the job is terminated/closed - this is how a Stop reliably kills the whole
 // `cmd → pnpm → node` tree instead of leaking orphaned children.
 
 #[cfg(windows)]

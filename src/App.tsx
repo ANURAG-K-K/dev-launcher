@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Home } from "@/views/Home";
 import { Project } from "@/views/Project";
 import { Logs } from "@/views/Logs";
@@ -11,11 +12,14 @@ import { History } from "@/views/History";
 import { ChangelogDialog } from "@/views/ChangelogDialog";
 import type { DependencyEdge, Profile, Project as ProjectT, ProjectWithRepos, RepoStatus, Repository, Settings as SettingsT } from "@/types";
 import { cn } from "@/lib/utils";
-import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, renameProject, restartRepo } from "@/api";
+import { applyProfile, getSettings, listDependencies, listProfiles, listRecentProjects, openProject, pickDirectory, projectRunningCounts, renameProject, restartRepo, updateProjectPath } from "@/api";
 import { applyTheme } from "@/lib/theme";
 import { IconButton } from "@/components/IconButton";
 
 type View = "home" | "project" | "logs" | "settings" | "history";
+
+const GITHUB_URL = "https://github.com/ANURAG-K-K/dev-launcher";
+const FEEDBACK_URL = "https://forms.gle/RLTKySxYLspbf2pj8";
 
 const NAV: { id: View; label: string; icon: ReactNode }[] = [
   {
@@ -75,6 +79,10 @@ function App() {
   const [renamingProjectId, setRenamingProjectId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState("");
+  const [recentOpenError, setRecentOpenError] = useState<Record<number, string>>({});
+  const [locatingProjectId, setLocatingProjectId] = useState<number | null>(null);
+  const [sidebarFilter, setSidebarFilter] = useState("");
+  const [runningCounts, setRunningCounts] = useState<Record<number, number>>({});
   const renameCancelledRef = useRef(false);
   const crashCountsRef = useRef<Record<number, number>>({});
   const [appVersion, setAppVersion] = useState("");
@@ -90,7 +98,26 @@ function App() {
     reposRef.current = repositories;
   }, [repositories]);
 
-  /** Notify on crash (F15), gated by the live setting — read fresh so a toggle takes effect at once. */
+  // Live mirror of recentProjects for the same reason (used inside the []-deps status listener).
+  const recentProjectsRef = useRef<ProjectT[]>([]);
+  useEffect(() => {
+    recentProjectsRef.current = recentProjects;
+  }, [recentProjects]);
+
+  /** Per-project count of currently-running services, for the sidebar's running indicator. */
+  async function refreshRunningCounts(projectIds: number[]) {
+    if (projectIds.length === 0) {
+      setRunningCounts({});
+      return;
+    }
+    try {
+      setRunningCounts(await projectRunningCounts(projectIds));
+    } catch {
+      /* ignore - indicator just stays at its last known state */
+    }
+  }
+
+  /** Notify on crash (F15), gated by the live setting - read fresh so a toggle takes effect at once. */
   async function notifyCrash(repositoryId: number) {
     let settings;
     try {
@@ -154,6 +181,7 @@ function App() {
         void notifyCrash(payload.repositoryId);
         void maybeAutoRestart(payload.repositoryId);
       }
+      void refreshRunningCounts(recentProjectsRef.current.map((p) => p.id));
     }).then((fn) => {
       unlisten = fn;
     });
@@ -170,26 +198,62 @@ function App() {
     refreshRecent();
   }
 
+  function applyPathUpdate(result: ProjectWithRepos) {
+    setRecentProjects((prev) => prev.map((p) => (p.id === result.project.id ? result.project : p)));
+    if (project?.id === result.project.id) {
+      setProject(result.project);
+      setRepositories(result.repositories);
+    }
+  }
+
+  function applyProjectDeleted(projectId: number) {
+    setRecentProjects((prev) => prev.filter((p) => p.id !== projectId));
+    if (project?.id === projectId) {
+      setProject(null);
+      setRepositories([]);
+      setView("home");
+    }
+  }
+
   async function refreshRecent() {
     try {
-      setRecentProjects(await listRecentProjects());
+      const recent = await listRecentProjects();
+      setRecentProjects(recent);
+      void refreshRunningCounts(recent.map((p) => p.id));
     } catch {
       /* ignore */
     }
   }
 
-  async function openRecent(rootPath: string) {
+  async function openRecent(p: ProjectT) {
+    setRecentOpenError((prev) => ({ ...prev, [p.id]: "" }));
     try {
-      applyResult(await openProject(rootPath));
-    } catch {
-      /* folder gone / unreadable — ignore */
+      applyResult(await openProject(p.rootPath));
+    } catch (err) {
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: String(err) }));
+    }
+  }
+
+  async function locateProject(p: ProjectT) {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setLocatingProjectId(p.id);
+    try {
+      const result = await updateProjectPath(p.id, dir);
+      setRecentProjects((prev) => prev.map((x) => (x.id === result.project.id ? result.project : x)));
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: "" }));
+      applyResult(result);
+    } catch (err) {
+      setRecentOpenError((prev) => ({ ...prev, [p.id]: String(err) }));
+    } finally {
+      setLocatingProjectId(null);
     }
   }
 
   function startRename(p: ProjectT) {
     // Cleared unconditionally on every edit-start (not just consumed-and-reset on the blur
     // path in saveRename): correctness can't depend on the browser firing `blur` when a
-    // focused element unmounts — Chromium/WebView2 (this app's actual runtime) doesn't.
+    // focused element unmounts - Chromium/WebView2 (this app's actual runtime) doesn't.
     renameCancelledRef.current = false;
     setRenamingProjectId(p.id);
     setRenameValue(p.name);
@@ -272,7 +336,7 @@ function App() {
   }, []);
 
   // Open at a standard size scaled to the screen (~85%, capped), centered. The user can then
-  // freely resize or maximize — no aspect-ratio snapping. Min size is set in tauri.conf.json.
+  // freely resize or maximize - no aspect-ratio snapping. Min size is set in tauri.conf.json.
   useEffect(() => {
     const appWindow = getCurrentWindow();
     (async () => {
@@ -282,10 +346,19 @@ function App() {
         await appWindow.setSize(new LogicalSize(w, h));
         await appWindow.center();
       } catch {
-        /* ignore — fall back to the configured default size */
+        /* ignore - fall back to the configured default size */
       }
     })();
   }, []);
+
+  const currentProjectRunningCount = repositories.filter((r) => {
+    const s = statuses[r.id]?.status;
+    return s === "running" || s === "starting";
+  }).length;
+
+  const filteredRecent = sidebarFilter.trim()
+    ? recentProjects.filter((p) => p.name.toLowerCase().includes(sidebarFilter.trim().toLowerCase()))
+    : recentProjects;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
@@ -304,8 +377,8 @@ function App() {
       >
         <div style={{ padding: "22px 16px 18px", borderBottom: "2px solid var(--color-divider)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src="/logo.svg" width={28} height={28} alt="" style={{ flex: "none" }} />
-            <div style={{ fontFamily: "var(--font-heading)", fontSize: 15, fontWeight: 800, letterSpacing: "0.01em", lineHeight: 1.15 }}>
+            <img src="/logo.svg" width={38} height={38} alt="" style={{ flex: "none" }} />
+            <div style={{ fontFamily: "var(--font-heading)", fontSize: 18, fontWeight: 800, letterSpacing: "0.01em", lineHeight: 1.15 }}>
               Dev
               <br />
               Launcher
@@ -317,17 +390,22 @@ function App() {
           {NAV.map((n) => {
             const disabled = (n.id === "project" || n.id === "history") && !project;
             const label = n.id === "project" && project ? `Project [${project.name}]` : n.label;
+            const showRunningDot = n.id === "project" && project && currentProjectRunningCount > 0;
             return (
               <button
                 key={n.id}
                 onClick={() => setView(n.id)}
                 disabled={disabled}
+                title={showRunningDot ? `${currentProjectRunningCount} running` : undefined}
                 className={cn("navitem", view === n.id && "navitem-active")}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   {n.icon}
                 </svg>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                {showRunningDot && (
+                  <span style={{ color: "var(--color-status-good-fg)", marginLeft: "auto", flex: "none" }}>●</span>
+                )}
               </button>
             );
           })}
@@ -335,10 +413,32 @@ function App() {
 
         <div style={{ flex: 1, overflow: "auto", borderTop: "2px solid var(--color-divider)", paddingBottom: 8 }}>
           <div className="sectiontitle" style={{ padding: "12px 16px 6px" }}>Recent</div>
+          {recentProjects.length > 0 && (
+            <div style={{ padding: "0 16px 8px" }}>
+              <input
+                type="text"
+                placeholder="Filter projects…"
+                value={sidebarFilter}
+                onChange={(e) => setSidebarFilter(e.target.value)}
+                style={{
+                  width: "100%",
+                  fontSize: 12,
+                  padding: "4px 8px",
+                  border: "1px solid var(--color-divider)",
+                  background: "var(--color-bg)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--color-text)",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          )}
           {recentProjects.length === 0 ? (
             <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No recent projects</div>
+          ) : filteredRecent.length === 0 ? (
+            <div className="text-muted" style={{ padding: "0 16px 8px", fontSize: 12 }}>No projects match "{sidebarFilter}"</div>
           ) : (
-            recentProjects.map((p) =>
+            filteredRecent.map((p) =>
               renamingProjectId === p.id ? (
                 <div key={p.id} style={{ padding: "4px 16px" }}>
                   <input
@@ -352,7 +452,7 @@ function App() {
                     }}
                     onBlur={() => {
                       // Blur with an empty name means the user moved on, not that they
-                      // rejected a submission — cancel silently instead of showing an
+                      // rejected a submission - cancel silently instead of showing an
                       // error the user can no longer see (focus has already left).
                       if (!renameValue.trim()) cancelRename();
                       else void saveRename(p.id);
@@ -365,43 +465,102 @@ function App() {
                   )}
                 </div>
               ) : (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
-                  <button
-                    className={cn("navitem", project?.id === p.id && "navitem-active")}
-                    title={p.rootPath}
-                    onClick={() => openRecent(p.rootPath)}
-                    style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
-                  >
-                    {p.name}
-                  </button>
-                  <IconButton title="Rename" onClick={() => startRename(p)}>
-                    <path d="M12 20h9" />
-                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                  </IconButton>
+                <div key={p.id}>
+                  <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>
+                    <button
+                      className={cn("navitem", project?.id === p.id && "navitem-active")}
+                      title={runningCounts[p.id] > 0 ? `${p.rootPath} - ${runningCounts[p.id]} running` : p.rootPath}
+                      onClick={() => openRecent(p)}
+                      style={{ flex: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}
+                    >
+                      {runningCounts[p.id] > 0 && (
+                        <span style={{ color: "var(--color-status-good-fg)", marginRight: 5 }}>●</span>
+                      )}
+                      {p.name}
+                    </button>
+                    <IconButton title="Rename" onClick={() => startRename(p)}>
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                    </IconButton>
+                  </div>
+                  {recentOpenError[p.id] && (
+                    <div
+                      style={{
+                        margin: "2px 16px 6px",
+                        padding: "6px 8px",
+                        borderRadius: "var(--radius-sm)",
+                        background: "var(--color-status-bad-bg)",
+                        color: "var(--color-status-bad-fg)",
+                        fontSize: 11,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
+                      <span>⚠ Folder not found - the project may have been moved or deleted.</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ alignSelf: "flex-start", padding: "3px 8px", fontSize: 11 }}
+                        onClick={() => locateProject(p)}
+                        disabled={locatingProjectId === p.id}
+                      >
+                        {locatingProjectId === p.id ? "Locating…" : "Locate…"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             )
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setChangelogOpen(true)}
-          title="View changelog"
-          style={{
-            width: "100%",
-            borderTop: "2px solid var(--color-divider)",
-            padding: "14px 16px",
-            fontSize: 11,
-            opacity: 0.5,
-            background: "none",
-            textAlign: "left",
-            cursor: "pointer",
-            color: "inherit",
-          }}
-        >
-          {appVersion ? `v${appVersion}` : ""}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", borderTop: "2px solid var(--color-divider)" }}>
+          <button
+            type="button"
+            onClick={() => setChangelogOpen(true)}
+            title="View changelog"
+            style={{
+              flex: 1,
+              padding: "14px 16px",
+              fontSize: 11,
+              opacity: 0.5,
+              background: "none",
+              textAlign: "left",
+              cursor: "pointer",
+              color: "inherit",
+            }}
+          >
+            {appVersion ? `v${appVersion}` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => void openUrl(FEEDBACK_URL)}
+            title="Report a bug, request a feature, or leave feedback"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "8px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "inherit",
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            Feedback
+          </button>
+          <IconButton title="View on GitHub" onClick={() => void openUrl(GITHUB_URL)}>
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </IconButton>
+        </div>
       </aside>
 
       {changelogOpen && (
@@ -416,6 +575,8 @@ function App() {
               setRecentProjects((prev) => prev.map((p) => (p.id === u.id ? u : p)));
               if (project?.id === u.id) setProject(u);
             }}
+            onPathUpdated={applyPathUpdate}
+            onDeleted={applyProjectDeleted}
           />
         )}
         {view === "project" && (

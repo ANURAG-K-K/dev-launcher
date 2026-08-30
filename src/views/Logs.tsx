@@ -68,6 +68,7 @@ export function Logs({
             className="btn btn-secondary"
             value={selectedRepoId ?? ""}
             onChange={(e) => onSelectRepo(Number(e.target.value))}
+            style={{ background: "var(--color-surface)", color: "var(--color-text)" }}
           >
             <option value="" disabled>
               Select a repository…
@@ -93,9 +94,9 @@ export function Logs({
               fontSize: 12.5,
               padding: "6px 10px",
               minWidth: 220,
-              background: "var(--color-neutral-900)",
-              color: "var(--color-neutral-100)",
-              border: "1px solid var(--color-neutral-700)",
+              background: "var(--color-terminal-bg)",
+              color: "var(--color-terminal-fg)",
+              border: "1px solid var(--color-terminal-border)",
               borderRadius: 6,
             }}
           />
@@ -103,6 +104,7 @@ export function Logs({
             className="btn btn-secondary"
             value={streamFilter}
             onChange={(e) => setStreamFilter(e.target.value as "all" | "stdout" | "stderr")}
+            style={{ background: "var(--color-surface)", color: "var(--color-text)" }}
           >
             <option value="all">All streams</option>
             <option value="stdout">stdout</option>
@@ -125,8 +127,8 @@ export function Logs({
         ref={scrollRef}
         style={{
           flex: 1,
-          background: "var(--color-neutral-900)",
-          color: "var(--color-neutral-100)",
+          background: "var(--color-terminal-bg)",
+          color: "var(--color-terminal-fg)",
           padding: "18px 20px",
           overflow: "auto",
         }}
