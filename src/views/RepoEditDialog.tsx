@@ -10,7 +10,12 @@ const INPUT_STYLE: CSSProperties = {
   borderRadius: "var(--radius-md)",
 };
 
-const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
+const PACKAGE_MANAGERS = [
+  "npm", "pnpm", "yarn", "bun",
+  "pip", "poetry", "uv", "pipenv",
+  "cargo",
+  "dotnet",
+] as const;
 
 function Field({
   label,
@@ -180,14 +185,16 @@ export function RepoEditDialog({
           </select>
         </Field>
 
-        <Field label="Command" helper="Full command to run. Leave empty to use the detected script.">
+        <Field label="Command" helper="Full command to run. Leave empty to use the detected default.">
           <input
             className="mono"
             style={INPUT_STYLE}
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             placeholder={
-              repo.detectedScript ? `${repo.packageManager} run ${repo.detectedScript} (detected)` : "e.g. pnpm tauri dev"
+              repo.detectedScript
+                ? `${repo.packageManager} run ${repo.detectedScript} (detected)`
+                : "e.g. cargo run, dotnet run, python main.py, or pnpm tauri dev"
             }
           />
         </Field>
