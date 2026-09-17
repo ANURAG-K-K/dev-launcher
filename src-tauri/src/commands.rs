@@ -101,7 +101,7 @@ pub async fn scan_repositories(
 }
 
 /// Lightweight check-and-refresh for the already-listed (active, non-removed) repositories of a
-/// project: verifies each one's folder + `package.json` still exist and re-detects its package
+/// project: verifies each one's folder and project marker still exist and re-detects its package
 /// manager/script if so, but - unlike `scan_repositories` ("Re-scan") - never discovers new
 /// repos and never un-removes a repo the user deliberately removed. A repo whose folder can't be
 /// found is reported via `missing_repository_ids` without touching its row at all, so a
@@ -262,10 +262,13 @@ pub async fn add_repository_manual(
     if !dir.is_dir() {
         return Err(AppError::Scan(format!("not a directory: {path}")));
     }
-    let repo = scanner::classify_repo_dir(dir, None)
-        .ok_or_else(|| AppError::Scan(format!("no package.json found in: {path}")))?;
+    let repo = scanner::classify_repo_dir(dir, None).ok_or_else(|| {
+        AppError::Scan(format!(
+            "no recognized project marker (package.json, pyproject.toml, Cargo.toml, *.csproj/*.sln) found in: {path}"
+        ))
+    })?;
 
-    let default_enabled = repo.detected_script.is_some();
+    let default_enabled = repo.command.is_some();
     persistence::upsert_repository(
         &state.pool,
         project_id,
@@ -302,8 +305,11 @@ pub async fn update_repository_path(
     if !dir.is_dir() {
         return Err(AppError::Scan(format!("not a directory: {new_path}")));
     }
-    let discovered = scanner::classify_repo_dir(dir, None)
-        .ok_or_else(|| AppError::Scan(format!("no package.json found in: {new_path}")))?;
+    let discovered = scanner::classify_repo_dir(dir, None).ok_or_else(|| {
+        AppError::Scan(format!(
+            "no recognized project marker (package.json, pyproject.toml, Cargo.toml, *.csproj/*.sln) found in: {new_path}"
+        ))
+    })?;
 
     persistence::update_repository_path(
         &state.pool,
@@ -342,8 +348,10 @@ async fn discover_and_persist(
     let discovered = scanner::scan_project_root(root).map_err(|e| AppError::Scan(e.to_string()))?;
 
     for repo in &discovered {
-        // New repos default enabled only when a startup script was detected (design.md §1.3).
-        let default_enabled = repo.detected_script.is_some();
+        // New repos default enabled only when a launch command is resolvable (design.md §1.3):
+        // for Node that means a detected script; every other toolchain always has a fixed
+        // default command, so `repo.command` is the correct truth value in both cases.
+        let default_enabled = repo.command.is_some();
         persistence::upsert_repository(
             pool,
             project_id,
@@ -471,30 +479,44 @@ pub async fn set_repository_dependencies(
         .map_err(|e| AppError::Persist(e.to_string()))
 }
 
-/// Execute all enabled repositories in a project sequentially (F7), honoring dependency order
-/// (F8). A repo whose dependency is disabled/unlaunchable is skipped (policy A4: block + report);
-/// a dependency cycle aborts the whole launch before anything starts.
-#[tauri::command]
-pub async fn execute_project(
-    state: State<'_, AppState>,
-    project_id: i64,
-    launch_delay_ms: u64,
-) -> Result<ExecuteResult, AppError> {
-    let repos = persistence::list_repositories(&state.pool, project_id)
-        .await
-        .map_err(|e| AppError::Persist(e.to_string()))?;
-    let edges = persistence::list_dependencies(&state.pool, project_id)
-        .await
-        .map_err(|e| AppError::Persist(e.to_string()))?;
+/// Whether an enabled repository can be launched: an explicit non-empty command override,
+/// or a resolvable default from its detected toolchain (design.md §4).
+pub(crate) fn is_launchable(repo: &persistence::Repository) -> bool {
+    if repo.enabled != 1 {
+        return false;
+    }
+    if repo.command.as_deref().is_some_and(|c| !c.is_empty()) {
+        return true;
+    }
+    scanner::PackageManager::parse(&repo.package_manager)
+        .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
+        .is_some()
+}
 
-    let enabled_ids: Vec<i64> = repos.iter().filter(|r| r.enabled == 1).map(|r| r.id).collect();
+/// Resolves a repository's effective launch command: its override if set, else the
+/// toolchain's default (design.md §4).
+pub(crate) fn resolve_command(repo: &persistence::Repository) -> Option<String> {
+    if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
+        return Some(command.to_string());
+    }
+    scanner::PackageManager::parse(&repo.package_manager)
+        .and_then(|pm| scanner::default_command(pm, repo.detected_script.as_deref()))
+}
 
+/// Computes which repos actually launch and in what order, given a project's repos and
+/// dependency edges: enabled + launchable (`is_launchable`), then block-on-unmet-dependency
+/// (A4) propagated to a fixed point, then topologically ordered. Pulled out of `execute_project`
+/// so this -- the actual filtering/ordering `execute_project` runs, not a re-implementation of
+/// it -- is directly unit-testable without spawning real processes (`execute_project` itself
+/// needs a live `AppState` with a process manager, which a unit test shouldn't stand up).
+/// Returns `Err(cyclic_ids)` on a dependency cycle, matching `launcher::topological_order`.
+pub(crate) fn compute_runnable_order(
+    repos: &[persistence::Repository],
+    edges: &[(i64, i64)],
+) -> Result<Vec<i64>, Vec<i64>> {
     // Start from enabled repos that actually have a launch command.
-    let mut runnable: std::collections::HashSet<i64> = repos
-        .iter()
-        .filter(|r| r.enabled == 1 && (r.command.is_some() || r.detected_script.is_some()))
-        .map(|r| r.id)
-        .collect();
+    let mut runnable: std::collections::HashSet<i64> =
+        repos.iter().filter(|r| is_launchable(r)).map(|r| r.id).collect();
 
     // Block-on-unmet-dependency (A4): drop any repo that depends on something outside the runnable
     // set, repeating until stable (so transitive blockers propagate).
@@ -524,7 +546,28 @@ pub async fn execute_project(
         .filter(|&(a, b)| runnable.contains(&a) && runnable.contains(&b))
         .collect();
 
-    let order = launcher::topological_order(&runnable_nodes, &runnable_edges)
+    launcher::topological_order(&runnable_nodes, &runnable_edges)
+}
+
+/// Execute all enabled repositories in a project sequentially (F7), honoring dependency order
+/// (F8). A repo whose dependency is disabled/unlaunchable is skipped (policy A4: block + report);
+/// a dependency cycle aborts the whole launch before anything starts.
+#[tauri::command]
+pub async fn execute_project(
+    state: State<'_, AppState>,
+    project_id: i64,
+    launch_delay_ms: u64,
+) -> Result<ExecuteResult, AppError> {
+    let repos = persistence::list_repositories(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+    let edges = persistence::list_dependencies(&state.pool, project_id)
+        .await
+        .map_err(|e| AppError::Persist(e.to_string()))?;
+
+    let enabled_ids: Vec<i64> = repos.iter().filter(|r| r.enabled == 1).map(|r| r.id).collect();
+
+    let order = compute_runnable_order(&repos, &edges)
         .map_err(|cyclic| AppError::Cycle(cycle_names(&repos, &cyclic)))?;
 
     // Record the run in launch history (F13). profile_id = the project's last-applied profile.
@@ -1624,8 +1667,7 @@ pub async fn update_repository_config(
     args: String,
     env_file: String,
 ) -> Result<persistence::Repository, AppError> {
-    const VALID_PM: [&str; 4] = ["npm", "pnpm", "yarn", "bun"];
-    if !VALID_PM.contains(&package_manager.as_str()) {
+    if scanner::PackageManager::parse(&package_manager).is_none() {
         return Err(AppError::Persist(format!(
             "invalid package manager: {package_manager}"
         )));
@@ -1773,15 +1815,11 @@ async fn launch_spec_for(
     }
 
     // Build the command tokens: a user override runs verbatim; otherwise derive from the
-    // package manager + detected script (design.md §1.4).
+    // toolchain's default command (design.md §3-4 - covers Node's script-based default and
+    // every other ecosystem's fixed default through the same function).
     let mut tokens: Vec<String> = Vec::new();
-    if let Some(command) = repo.command.as_deref().filter(|c| !c.is_empty()) {
-        tokens.push(command.to_string());
-    } else if let Some(script) = repo.detected_script.as_deref() {
-        match repo.package_manager.as_str() {
-            "yarn" => tokens.push(format!("yarn {script}")),
-            pm => tokens.push(format!("{pm} run {script}")),
-        }
+    if let Some(command) = resolve_command(&repo) {
+        tokens.push(command);
     } else {
         return Err(AppError::Launch(format!(
             "repository '{}' has no launch command (set one or add a start script)",
@@ -3072,6 +3110,257 @@ mod list_env_files_tests {
         assert!(files.is_empty());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+}
+
+/// Covers Task 4's fix: `execute_project`'s launchable filter, `launch_spec_for`'s command
+/// builder, and `update_repository_config`'s validation must all route through
+/// `scanner::default_command`/`scanner::PackageManager::parse` instead of Node-only inline
+/// logic, so a freshly-discovered non-Node repo (Rust/Python/.NET - none of which ever set
+/// `detected_script`) is launchable with the right default command.
+///
+/// `execute_project` and `launch_spec_for` take `tauri::State<'_, AppState>`/`&AppState`, and
+/// `AppState` embeds a `ProcessManager` that requires a live `tauri::AppHandle` to construct -
+/// this crate has no `tauri` "test" feature enabled (see `Cargo.toml`), so those functions
+/// cannot be invoked directly in a unit test without an out-of-scope Cargo.toml change. Instead,
+/// `execute_project`'s filter and `launch_spec_for`'s command builder were extracted into the
+/// pure `is_launchable`/`resolve_command` functions above, which these tests call directly -
+/// no mirrored/hand-copied logic, so a regression in either extracted function fails here too.
+///
+/// `execute_project`'s filtering/ordering (enabled + launchable + dependency-blocking +
+/// topological order) is further extracted into `compute_runnable_order`, which needs only
+/// `persistence::Repository` rows and dependency edges - no `AppState`/`AppHandle` at all. The
+/// `execute_project_*` tests below call it with real rows inserted through the persistence layer
+/// (the actual production DB path), closing the gap where the filter was previously only tested
+/// one layer down, via `scanner::default_command` in isolation.
+#[cfg(test)]
+mod default_command_tests {
+    use super::*;
+
+    async fn setup_test_db() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let unique = format!(
+            "mrl_cmd_test_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let db_path = std::env::temp_dir().join(unique);
+        let pool = persistence::init_pool(&db_path).await.expect("init_pool failed");
+        persistence::run_migrations(&pool).await.expect("run_migrations failed");
+        (pool, db_path)
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn fake_repo(
+        package_manager: &str,
+        detected_script: Option<&str>,
+        command: Option<&str>,
+    ) -> persistence::Repository {
+        persistence::Repository {
+            id: 1,
+            project_id: 1,
+            name: "svc".to_string(),
+            path: "/repos/proj/svc".to_string(),
+            package_manager: package_manager.to_string(),
+            detected_script: detected_script.map(|s| s.to_string()),
+            command: command.map(|s| s.to_string()),
+            args: None,
+            env_file: None,
+            enabled: 1,
+            favorite: 0,
+            visible_console: 0,
+            removed_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn freshly_discovered_cargo_repo_is_launchable_with_default_command() {
+        let (pool, db_path) = setup_test_db().await;
+        let project = persistence::upsert_project(&pool, "Proj", "/repos/proj")
+            .await
+            .expect("upsert project failed");
+        let repo = persistence::upsert_repository(
+            &pool, project.id, "svc", "/repos/proj/svc", "cargo", None, true,
+        )
+        .await
+        .expect("upsert repository failed");
+
+        // No command override, no detected_script (Rust never sets one) - must still resolve,
+        // through the exact same functions execute_project/launch_spec_for call.
+        assert_eq!(repo.command, None);
+        assert_eq!(repo.detected_script, None);
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("cargo run"));
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn package_manager_parse_accepts_every_valid_update_repository_config_value() {
+        for pm in ["npm", "pnpm", "yarn", "bun", "pip", "poetry", "uv", "pipenv", "cargo", "dotnet"] {
+            assert!(
+                scanner::PackageManager::parse(pm).is_some(),
+                "expected '{pm}' to parse as a valid package manager"
+            );
+        }
+        assert!(scanner::PackageManager::parse("not-real").is_none());
+    }
+
+    #[test]
+    fn non_node_repos_with_no_override_and_no_script_are_launchable() {
+        for pm in ["cargo", "dotnet", "pip", "poetry", "uv", "pipenv"] {
+            let repo = fake_repo(pm, None, None);
+            assert!(is_launchable(&repo), "expected '{pm}' repo with no override to be runnable");
+            assert!(
+                resolve_command(&repo).is_some(),
+                "expected '{pm}' repo with no override to resolve a default command"
+            );
+        }
+    }
+
+    #[test]
+    fn node_repo_with_no_script_and_no_override_is_not_runnable() {
+        // Node has no fixed default command - unlike cargo/dotnet/pip, it truly needs either a
+        // detected start script or a user override.
+        let repo = fake_repo("npm", None, None);
+        assert!(!is_launchable(&repo));
+        assert_eq!(resolve_command(&repo), None);
+    }
+
+    #[test]
+    fn empty_string_override_falls_back_to_default_command() {
+        let repo = fake_repo("cargo", None, Some(""));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("cargo run"));
+    }
+
+    #[test]
+    fn non_empty_override_wins_regardless_of_package_manager() {
+        let repo = fake_repo("dotnet", None, Some("dotnet watch run"));
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("dotnet watch run"));
+    }
+
+    #[test]
+    fn disabled_repo_is_never_runnable_even_with_a_default() {
+        let mut repo = fake_repo("cargo", None, None);
+        repo.enabled = 0;
+        assert!(!is_launchable(&repo));
+    }
+
+    #[test]
+    fn node_repo_with_detected_script_is_launchable_with_npm_run_default() {
+        let repo = fake_repo("npm", Some("dev"), None);
+        assert!(is_launchable(&repo));
+        assert_eq!(resolve_command(&repo).as_deref(), Some("npm run dev"));
+    }
+
+    #[test]
+    fn unknown_package_manager_is_never_launchable() {
+        let repo = fake_repo("gradle", None, None);
+        assert!(!is_launchable(&repo));
+        assert_eq!(resolve_command(&repo), None);
+    }
+
+    /// The actual regression Task 4 exists to prevent: a freshly-discovered non-Node repo must
+    /// be *included* by `execute_project`'s real filtering/ordering, not just resolvable to a
+    /// command in isolation. Inserts through `persistence::upsert_repository` (the real scan/
+    /// rescan write path) and calls `compute_runnable_order` (the exact function `execute_project`
+    /// calls) rather than re-deriving the filter by hand.
+    #[tokio::test]
+    async fn execute_project_runnable_order_includes_freshly_discovered_non_node_repo() {
+        let (pool, db_path) = setup_test_db().await;
+        let project = persistence::upsert_project(&pool, "Proj", "/repos/proj")
+            .await
+            .expect("upsert project failed");
+
+        let node_repo = persistence::upsert_repository(
+            &pool, project.id, "web", "/repos/proj/web", "npm", Some("dev"), true,
+        )
+        .await
+        .expect("upsert node repo failed");
+        let cargo_repo = persistence::upsert_repository(
+            &pool, project.id, "svc", "/repos/proj/svc", "cargo", None, true,
+        )
+        .await
+        .expect("upsert cargo repo failed");
+
+        let repos = persistence::list_repositories(&pool, project.id)
+            .await
+            .expect("list_repositories failed");
+        let edges = persistence::list_dependencies(&pool, project.id)
+            .await
+            .expect("list_dependencies failed");
+
+        let order = compute_runnable_order(&repos, &edges).expect("no cycle expected");
+
+        assert!(
+            order.contains(&cargo_repo.id),
+            "freshly-discovered cargo repo (no override, no detected_script) must be in the \
+             runnable order execute_project actually launches, not just resolvable in isolation"
+        );
+        assert!(order.contains(&node_repo.id));
+        assert_eq!(order.len(), 2);
+
+        pool.close().await;
+        cleanup_db(&db_path);
+    }
+
+    /// A non-Node repo that depends on a disabled repo must still be correctly blocked (A4) -
+    /// proves `compute_runnable_order`'s dependency propagation isn't accidentally bypassed for
+    /// ecosystems that don't need a `detected_script` to be launchable.
+    #[tokio::test]
+    async fn execute_project_runnable_order_blocks_non_node_repo_on_disabled_dependency() {
+        let (pool, db_path) = setup_test_db().await;
+        let project = persistence::upsert_project(&pool, "Proj", "/repos/proj")
+            .await
+            .expect("upsert project failed");
+
+        let dependency = persistence::upsert_repository(
+            &pool, project.id, "db", "/repos/proj/db", "cargo", None, true,
+        )
+        .await
+        .expect("upsert dependency repo failed");
+        let dependent = persistence::upsert_repository(
+            &pool, project.id, "api", "/repos/proj/api", "dotnet", None, true,
+        )
+        .await
+        .expect("upsert dependent repo failed");
+
+        // Disable the dependency after creation, then re-list so it's excluded from `runnable`
+        // by `is_launchable`'s `enabled` check.
+        sqlx::query("UPDATE repositories SET enabled = 0 WHERE id = ?")
+            .bind(dependency.id)
+            .execute(&pool)
+            .await
+            .expect("disable dependency failed");
+        persistence::set_repository_dependencies(&pool, dependent.id, &[dependency.id])
+            .await
+            .expect("set_repository_dependencies failed");
+
+        let repos = persistence::list_repositories(&pool, project.id)
+            .await
+            .expect("list_repositories failed");
+        let edges = persistence::list_dependencies(&pool, project.id)
+            .await
+            .expect("list_dependencies failed");
+
+        let order = compute_runnable_order(&repos, &edges).expect("no cycle expected");
+
+        assert!(
+            !order.contains(&dependent.id),
+            "a launchable non-Node repo depending on a disabled repo must still be blocked (A4)"
+        );
+
         pool.close().await;
         cleanup_db(&db_path);
     }
