@@ -6,7 +6,7 @@
 //! `bun.lock` → bun), and recommend a startup script by priority
 //! (`start:dev` → `dev` → `start` → `serve` → `watch`).
 //!
-//! A child directory that is itself not a repo (no `package.json`) is checked one level
+//! A child directory that is itself not a repo (no recognized project marker) is checked one level
 //! deeper for repos nested inside it (`parent -> sub_dir -> repo`), so a grouping folder such
 //! as `services/` doesn't hide the repos underneath it. Nested repos are named
 //! `sub_dir/repo` to disambiguate same-named repos under different groups. Nothing past that
@@ -108,9 +108,14 @@ fn has_file_with_extension(dir: &Path, ext: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    entries
-        .filter_map(|e| e.ok())
-        .any(|e| e.path().extension().and_then(|e| e.to_str()) == Some(ext))
+    entries.filter_map(|e| e.ok()).any(|e| {
+        let path = e.path();
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|found| found.eq_ignore_ascii_case(ext))
+    })
 }
 
 const ECOSYSTEMS: &[EcosystemSpec] = &[
@@ -201,18 +206,18 @@ pub fn default_command(pm: PackageManager, detected_script: Option<&str>) -> Opt
 /// directory name (used to qualify nested repos as `sub_dir/repo`); pass `None` to use the
 /// directory's own name.
 pub fn classify_repo_dir(path: &Path, display_name: Option<&str>) -> Option<DiscoveredRepo> {
-    let (index, spec) = ECOSYSTEMS.iter().enumerate().find(|(_, spec)| (spec.marker)(path))?;
+    let spec = ECOSYSTEMS.iter().find(|spec| (spec.marker)(path))?;
 
     let name = match display_name {
         Some(n) => n.to_string(),
         None => path.file_name()?.to_string_lossy().into_owned(),
     };
     let package_manager = detect_toolchain(path, spec);
-    let detected_script = if index == 0 {
-        detect_node_script(&path.join("package.json"))
-    } else {
-        None
-    };
+    // `detect_node_script` is already a no-op (returns `None`) for any directory without a
+    // `package.json` - which is exactly every directory that reached a later ecosystem's spec,
+    // since Node's own marker is checked first and didn't match. So this doesn't need to know
+    // which ecosystem matched; no index/enumerate bookkeeping required.
+    let detected_script = detect_node_script(&path.join("package.json"));
     let command = default_command(package_manager, detected_script.as_deref());
 
     Some(DiscoveredRepo {
@@ -534,6 +539,32 @@ mod tests {
         let repos = scan_project_root(tmp.path()).unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].package_manager, PackageManager::Dotnet);
+    }
+
+    #[test]
+    fn dotnet_marker_matching_is_case_insensitive() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        write(&repo, "MyApp.CSPROJ", "");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert_eq!(repos.len(), 1, "an uppercase .CSPROJ extension must still match the .csproj marker");
+        assert_eq!(repos[0].package_manager, PackageManager::Dotnet);
+    }
+
+    #[test]
+    fn directory_named_like_a_marker_file_is_not_mistaken_for_one() {
+        let tmp = TempDir::new();
+        let repo = tmp.child_dir("svc");
+        // A subdirectory whose name happens to end in ".csproj" - not a file, so it must not
+        // satisfy the .NET marker check on its own.
+        std::fs::create_dir_all(repo.join("fake.csproj")).expect("create decoy directory");
+
+        let repos = scan_project_root(tmp.path()).unwrap();
+        assert!(
+            repos.is_empty(),
+            "a directory merely named like a marker file must not be treated as a .NET repo: {repos:?}"
+        );
     }
 
     #[test]
