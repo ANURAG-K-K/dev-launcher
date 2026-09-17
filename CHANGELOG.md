@@ -3,6 +3,15 @@
 All notable changes to this project. Mirrors the in-app "What's new" dialog
 (`src/data/changelog.ts`).
 
+## v0.6.0 - 2026-09-18
+
+### Major
+- Multi-framework repository detection: Python (pyproject.toml / Pipfile / requirements.txt), Rust (Cargo.toml), and .NET (.csproj / .sln) repos are now discovered and launchable alongside Node.js, with the right default run command per toolchain (pip / poetry / uv / pipenv, cargo, dotnet)
+
+### Minor
+- Command field placeholder and dropdown now reflect every supported package manager, not just Node's
+- Hardened .csproj / .sln marker detection: a directory merely named like a marker file no longer counts, and extension matching is case-insensitive
+
 ## v0.5.0 - 2026-08-30
 
 ### Major

@@ -9,6 +9,17 @@ export interface ChangelogEntry {
 // Newest first. `major` = new capabilities, `minor` = small enhancements and fixes.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.6.0",
+    date: "2026-09-18",
+    major: [
+      "Multi-framework repository detection: Python (pyproject.toml / Pipfile / requirements.txt), Rust (Cargo.toml), and .NET (.csproj / .sln) repos are now discovered and launchable alongside Node.js, with the right default run command per toolchain (pip / poetry / uv / pipenv, cargo, dotnet)",
+    ],
+    minor: [
+      "Command field placeholder and dropdown now reflect every supported package manager, not just Node's",
+      "Hardened .csproj / .sln marker detection: a directory merely named like a marker file no longer counts, and extension matching is case-insensitive",
+    ],
+  },
+  {
     version: "0.5.0",
     date: "2026-08-30",
     major: [

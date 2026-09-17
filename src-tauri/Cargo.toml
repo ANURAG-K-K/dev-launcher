@@ -1,6 +1,6 @@
 [package]
 name = "multi-repo-launcher"
-version = "0.5.0"
+version = "0.6.0"
 description = "Multi-Repo Dev Launcher — discover, configure, and launch multiple dev repositories from one Windows desktop app."
 authors = ["Anurag Kaushal"]
 edition = "2021"

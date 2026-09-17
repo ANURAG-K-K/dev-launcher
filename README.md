@@ -12,8 +12,10 @@ Built with **Tauri v2**, **Rust**, **React + Vite + TypeScript**, and **SQLite**
 
 ## Features
 
-- **Repository discovery** - scans a project root's immediate child folders for `package.json`
-  and detects the package manager (pnpm / npm / yarn / bun).
+- **Repository discovery** - scans a project root's immediate child folders for a recognized
+  project marker and detects its toolchain: Node.js (`package.json`; pnpm / npm / yarn / bun),
+  Python (`pyproject.toml` / `Pipfile` / `requirements.txt`; poetry / uv / pipenv / pip), Rust
+  (`Cargo.toml`; cargo), or .NET (`.csproj` / `.sln`; dotnet).
 - **Sequential launcher** - starts enabled repos one at a time with a configurable delay,
   respecting declared dependencies.
 - **Launch profiles** - named sets of enabled repos, order, and command overrides.
