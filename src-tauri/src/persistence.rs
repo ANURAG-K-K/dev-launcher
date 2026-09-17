@@ -76,12 +76,29 @@ pub async fn init_pool(db_path: &std::path::Path) -> Result<SqlitePool, sqlx::Er
     SqlitePoolOptions::new().connect_with(options).await
 }
 
-/// Run embedded migrations from `./migrations` (relative to `CARGO_MANIFEST_DIR`).
+/// Run embedded migrations from `./migrations` (relative to `CARGO_MANIFEST_DIR`), then verify
+/// no foreign key references were left dangling. Migration 0005 rebuilds `repositories` (SQLite
+/// has no `ALTER TABLE ... ALTER COLUMN` for CHECK constraints), which briefly drops the table
+/// three other tables hold FK references to; this check turns a silent, hard-to-diagnose data
+/// corruption into a startup failure if that copy/rebuild ever left rows orphaned.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::migrate!("./migrations")
         .run(pool)
         .await
-        .map_err(|e| sqlx::Error::Migrate(Box::new(e)))
+        .map_err(|e| sqlx::Error::Migrate(Box::new(e)))?;
+
+    let violations: Vec<(String,)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(pool)
+        .await?;
+    if !violations.is_empty() {
+        return Err(sqlx::Error::Protocol(format!(
+            "post-migration integrity check found {} dangling foreign key reference(s), starting with table '{}'",
+            violations.len(),
+            violations[0].0
+        )));
+    }
+
+    Ok(())
 }
 
 /// Insert the project if new, else update last_opened_at + updated_at. Keyed on
@@ -1297,6 +1314,378 @@ mod tests {
             rescanned.command.as_deref(),
             Some("cargo run --release"),
             "command override must survive rescanning a non-Node repository"
+        );
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    /// Genuinely exercises migration 0005 itself, not just the schema it produces:
+    /// seeds a pre-2B database (migrations 0001-0004 only) with real data -- a Node repo with a
+    /// user command override, and a `repository_dependencies` row, the exact FK relationship the
+    /// table-rebuild has to preserve -- then applies 0005's actual SQL and verifies nothing was
+    /// lost. Runs against a pool with several *eagerly opened* connections (`min_connections`) so
+    /// connections that cached the pre-migration schema before 0005 ran are still in the pool
+    /// afterwards; every assertion below issues its query through the shared pool, which sqlx
+    /// freely hands out any of those connections for, so a stale per-connection schema cache
+    /// (the risk with the old `PRAGMA writable_schema` approach) would surface as a spurious CHECK
+    /// failure here.
+    #[tokio::test]
+    async fn migration_0005_rebuilds_repositories_without_losing_data_under_pool_concurrency() {
+        let unique = format!(
+            "mrl_test_migration0005_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let path = std::env::temp_dir().join(unique);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .min_connections(4)
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .expect("connect failed");
+
+        // Simulate an existing production database on schema 0004 (pre-2B): apply 0001-0004's
+        // actual SQL directly, bypassing sqlx's migration-tracking table (irrelevant to what this
+        // test proves) so 0005 below runs against a database it has never touched.
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_reclassify_reconciled_items.sql"),
+            include_str!("../migrations/0003_add_repository_favorite.sql"),
+            include_str!("../migrations/0004_add_repository_visible_console.sql"),
+        ] {
+            for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|e| panic!("pre-0005 setup statement failed ({statement}): {e}"));
+            }
+        }
+
+        // Seed real pre-existing data: two Node repos (old package_manager values, must keep
+        // working), one with a user command override, plus a `repository_dependencies` FK row --
+        // the exact relationship the table-rebuild drops and must correctly restore.
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo_a = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo a failed");
+        let repo_b = upsert_repository(&pool, project.id, "web", "/repos/proj/web", "yarn", Some("start"), true)
+            .await
+            .expect("upsert repo b failed");
+        update_repository_config(&pool, repo_a.id, "npm", Some("npm run dev -- --port=4000"), Some("--verbose"), None)
+            .await
+            .expect("set override on repo a failed");
+        sqlx::query(
+            "INSERT INTO repository_dependencies (repository_id, depends_on_repository_id) VALUES (?, ?)",
+        )
+        .bind(repo_b.id)
+        .bind(repo_a.id)
+        .execute(&pool)
+        .await
+        .expect("insert dependency failed");
+
+        // Capture the dependent tables' own schema (their CREATE TABLE text and every index
+        // bound to them) before the migration -- these tables are never dropped/recreated by
+        // 0005, only their rows are cascade-wiped-then-restored, so this must come back
+        // byte-for-byte identical afterwards.
+        let dependent_schema_before: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_schema
+             WHERE tbl_name IN ('repository_dependencies', 'profile_repositories', 'launch_history_items')
+             ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("schema snapshot before migration failed");
+        // 3 CREATE TABLEs + 6 named indexes + 2 SQLite-implicit UNIQUE-constraint autoindexes
+        // (repository_dependencies' and profile_repositories' UNIQUE(...) columns).
+        assert_eq!(
+            dependent_schema_before.len(),
+            11,
+            "expected 3 tables + 6 named indexes + 2 UNIQUE-constraint autoindexes, got: {dependent_schema_before:?}"
+        );
+
+        // Apply migration 0005's actual SQL (the same file the app ships) as ONE transaction --
+        // matching exactly how `sqlx::migrate!` applies a migration file in production. This
+        // matters: `PRAGMA defer_foreign_keys = ON` resets to OFF at the end of its own
+        // transaction, so running each statement as a separate autocommit statement (as an
+        // earlier version of this test did, via `.execute(&pool)` per statement) silently
+        // discards the deferral before `DROP TABLE repositories` runs, letting SQLite's implicit
+        // delete-then-cascade-on-drop (active whenever foreign key enforcement actually applies)
+        // wipe the `repository_dependencies` row below. Caught only because this test asserts on
+        // it explicitly -- a real, easy-to-get-wrong hazard of this migration technique, not a
+        // hypothetical one.
+        let mut tx = pool.begin().await.expect("begin migration 0005 transaction failed");
+        for statement in include_str!("../migrations/0005_widen_package_manager.sql")
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|e| panic!("migration 0005 statement failed ({statement}): {e}"));
+        }
+        tx.commit().await.expect("commit migration 0005 transaction failed");
+
+        // Existing rows survived with the same ids, same data, same override.
+        let a_after = get_repository(&pool, repo_a.id).await.expect("get repo a failed").expect("repo a must still exist");
+        assert_eq!(a_after.package_manager, "npm", "existing Node package_manager value must still work post-migration");
+        assert_eq!(a_after.name, "api");
+        assert_eq!(
+            a_after.command.as_deref(),
+            Some("npm run dev -- --port=4000"),
+            "command override must survive the table rebuild"
+        );
+        assert_eq!(a_after.args.as_deref(), Some("--verbose"));
+
+        let b_after = get_repository(&pool, repo_b.id).await.expect("get repo b failed").expect("repo b must still exist");
+        assert_eq!(b_after.package_manager, "yarn", "existing yarn value must still work post-migration");
+
+        // The FK row survived and still resolves to the same (unchanged) ids -- proof the
+        // table-rebuild preserved rowids rather than renumbering them.
+        let dep: (i64, i64) = sqlx::query_as(
+            "SELECT repository_id, depends_on_repository_id FROM repository_dependencies WHERE repository_id = ?",
+        )
+        .bind(repo_b.id)
+        .fetch_one(&pool)
+        .await
+        .expect("dependency row must survive the migration");
+        assert_eq!(dep, (repo_b.id, repo_a.id));
+
+        // New non-Node package_manager values are now accepted -- fired *concurrently* (not one
+        // acquire-at-a-time) so the pool is forced to hand out more than one of its 4 physical
+        // connections simultaneously to service them; every one must succeed. A stale
+        // per-connection schema cache (the risk with the old `PRAGMA writable_schema` approach,
+        // which edits `sqlite_schema` without the normal schema-cookie bump other connections
+        // watch for) would surface here as a spurious CHECK-constraint rejection on whichever
+        // connection didn't get the memo.
+        let handles: Vec<_> = ["pip", "poetry", "uv", "pipenv", "cargo", "dotnet"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, pm)| {
+                let pool = pool.clone();
+                let project_id = project.id;
+                tokio::spawn(async move {
+                    sqlx::query(
+                        "INSERT INTO repositories (project_id, name, path, package_manager, enabled, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))",
+                    )
+                    .bind(project_id)
+                    .bind(format!("repo-{pm}-{i}"))
+                    .bind(format!("/repos/proj/{pm}"))
+                    .bind(pm)
+                    .execute(&pool)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("insert with package_manager '{pm}' must succeed post-migration on a concurrently-acquired pooled connection: {e}"))
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.await.expect("insert task panicked").expect("concurrent insert failed");
+        }
+
+        // An old, now-invalid value must still be rejected -- proves the CHECK constraint is
+        // actually enforced post-rebuild, not silently dropped along with the table.
+        let rejected = sqlx::query(
+            "INSERT INTO repositories (project_id, name, path, package_manager, enabled, created_at, updated_at)
+             VALUES (?, 'bad', '/repos/proj/bad', 'not-a-real-toolchain', 1, datetime('now'), datetime('now'))",
+        )
+        .bind(project.id)
+        .execute(&pool)
+        .await;
+        assert!(rejected.is_err(), "CHECK constraint must still reject unknown package_manager values");
+
+        // The dependent tables' own schema (their CREATE TABLE text and every index bound to
+        // them) is untouched -- byte-for-byte identical to the pre-migration snapshot. These
+        // tables are never dropped by 0005, only their rows are cascade-wiped-then-restored, so
+        // their DDL must never change.
+        let dependent_schema_after: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_schema
+             WHERE tbl_name IN ('repository_dependencies', 'profile_repositories', 'launch_history_items')
+             ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("schema snapshot after migration failed");
+        assert_eq!(
+            dependent_schema_before, dependent_schema_after,
+            "dependent tables' own CREATE TABLE/INDEX definitions must be byte-for-byte unchanged \
+             by a migration that only rebuilds repositories, not them"
+        );
+
+        // The FK from repository_dependencies to the *new* repositories table is still actually
+        // enforced, not silently disabled by the rebuild: an edge naming a nonexistent
+        // repository id must still be rejected.
+        let bad_fk = sqlx::query(
+            "INSERT INTO repository_dependencies (repository_id, depends_on_repository_id) VALUES (?, ?)",
+        )
+        .bind(repo_a.id)
+        .bind(999_999_i64)
+        .execute(&pool)
+        .await;
+        assert!(
+            bad_fk.is_err(),
+            "repository_dependencies' FK to the rebuilt/renamed repositories table must still be enforced"
+        );
+
+        // The migration's temp snapshot tables don't leak past it -- gone once the migration's
+        // transaction commits (temp tables are connection-scoped and this migration explicitly
+        // drops them besides).
+        let leaked_temp_tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_temp_master WHERE type = 'table' AND name LIKE '\\_2b\\_%' ESCAPE '\\'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("temp master query failed");
+        assert!(
+            leaked_temp_tables.is_empty(),
+            "migration 0005's snapshot temp tables must not survive past it: {leaked_temp_tables:?}"
+        );
+
+        pool.close().await;
+        cleanup(&path);
+    }
+
+    /// Rollback/failure-path coverage: if any statement in migration 0005 fails (simulated here
+    /// by appending one guaranteed-to-fail statement to its real SQL), the whole thing must be
+    /// atomic -- nothing partially applied. This mirrors sqlx's own `Sqlite::apply` exactly: it
+    /// runs the entire migration file as one `tx.execute()` before ever inserting into
+    /// `_sqlx_migrations` or calling `tx.commit()` (confirmed by reading sqlx-sqlite 0.8.6's
+    /// source), so any mid-file failure means `tx` is dropped/rolled back with zero durable
+    /// effect -- old schema, old data, and no leaked temp tables, exactly as if the migration had
+    /// never been attempted.
+    #[tokio::test]
+    async fn migration_0005_rolls_back_completely_and_leaves_no_temp_tables_if_a_later_statement_fails() {
+        let unique = format!(
+            "mrl_test_migration0005_rollback_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let path = std::env::temp_dir().join(unique);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new().connect_with(options).await.expect("connect failed");
+
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_reclassify_reconciled_items.sql"),
+            include_str!("../migrations/0003_add_repository_favorite.sql"),
+            include_str!("../migrations/0004_add_repository_visible_console.sql"),
+        ] {
+            for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|e| panic!("pre-0005 setup statement failed ({statement}): {e}"));
+            }
+        }
+
+        let project = upsert_project(&pool, "Proj", "/repos/proj").await.expect("upsert project failed");
+        let repo_a = upsert_repository(&pool, project.id, "api", "/repos/proj/api", "npm", Some("dev"), true)
+            .await
+            .expect("upsert repo a failed");
+        let repo_b = upsert_repository(&pool, project.id, "web", "/repos/proj/web", "yarn", Some("start"), true)
+            .await
+            .expect("upsert repo b failed");
+        sqlx::query(
+            "INSERT INTO repository_dependencies (repository_id, depends_on_repository_id) VALUES (?, ?)",
+        )
+        .bind(repo_b.id)
+        .bind(repo_a.id)
+        .execute(&pool)
+        .await
+        .expect("insert dependency failed");
+
+        let schema_before: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'repositories'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("schema snapshot before failed");
+
+        // Real 0005 SQL, plus one statement guaranteed to fail appended at the very end (after
+        // the real DROP/rename/restore has already run inside this same, still-open
+        // transaction) -- the worst case for partial application, since every real statement
+        // "succeeded" before the failure.
+        let mut doctored_sql = include_str!("../migrations/0005_widen_package_manager.sql").to_string();
+        doctored_sql.push_str("\nINSERT INTO this_table_does_not_exist_anywhere (x) VALUES (1);\n");
+
+        let mut tx = pool.begin().await.expect("begin failed");
+        let mut hit_expected_failure = false;
+        for statement in doctored_sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Err(e) = sqlx::query(statement).execute(&mut *tx).await {
+                assert!(
+                    statement.contains("this_table_does_not_exist_anywhere"),
+                    "an unexpected statement failed instead of the injected one ({statement}): {e}"
+                );
+                hit_expected_failure = true;
+                break;
+            }
+        }
+        assert!(hit_expected_failure, "the injected failing statement must actually fail");
+        // Mirrors what `Transaction::drop` does automatically in production when `apply()`
+        // returns `Err` via `?` without ever calling `.commit()` -- made explicit here so the
+        // test doesn't depend on drop-time async cleanup timing.
+        tx.rollback().await.expect("rollback failed");
+
+        // Schema is back to the OLD, narrower CHECK constraint -- byte-for-byte, not just "a
+        // repositories table exists".
+        let schema_after: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'repositories'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("schema snapshot after failed");
+        assert_eq!(schema_before, schema_after, "a rolled-back migration must leave the schema untouched");
+
+        // Old data, including the dependency row, is exactly as it was.
+        let a_after = get_repository(&pool, repo_a.id).await.expect("get repo a failed").expect("repo a must still exist");
+        assert_eq!(a_after.package_manager, "npm");
+        let dep_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM repository_dependencies WHERE repository_id = ? AND depends_on_repository_id = ?",
+        )
+        .bind(repo_b.id)
+        .bind(repo_a.id)
+        .fetch_one(&pool)
+        .await
+        .expect("dependency count query failed");
+        assert_eq!(dep_count, 1, "the dependency row must be untouched after rollback");
+
+        // The old, narrower CHECK constraint is still the one actually enforced (proves the
+        // schema didn't just *look* unchanged but was actually reverted).
+        let rejected = sqlx::query(
+            "INSERT INTO repositories (project_id, name, path, package_manager, enabled, created_at, updated_at)
+             VALUES (?, 'x', '/repos/proj/x', 'cargo', 1, datetime('now'), datetime('now'))",
+        )
+        .bind(project.id)
+        .execute(&pool)
+        .await;
+        assert!(
+            rejected.is_err(),
+            "'cargo' must still be rejected -- the widened CHECK constraint must not have taken effect"
+        );
+
+        // No trace of the aborted attempt's temp snapshot tables.
+        let leaked_temp_tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_temp_master WHERE type = 'table' AND name LIKE '\\_2b\\_%' ESCAPE '\\'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("temp master query failed");
+        assert!(
+            leaked_temp_tables.is_empty(),
+            "an aborted migration attempt must not leave temp snapshot tables behind: {leaked_temp_tables:?}"
         );
 
         pool.close().await;
